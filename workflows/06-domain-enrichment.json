@@ -1,0 +1,577 @@
+{
+  "name": "06-domain-enrichment Domain Enrichment",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 06 Domain Enrichment\n\nCompany size, industry, tech and socials from a domain, behind a cache and a pluggable provider interface.\n\n**Safety rails:** Does not gate on the rails - it never contacts a prospect. It does spend money, so it writes every paid lookup to the spend ledger the rails read for the daily cap.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "02b8a122-9da5-6915-a071-2b95507e1b22",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "067c3f3b-366a-a096-63a9-49d8b6ff259b",
+      "name": "Called By Workflow"
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "12092a41-1f85-e962-1e03-808ddbb72d6a",
+              "name": "provider",
+              "value": "={{ $env.ENRICHMENT_PROVIDER || 'primary' }}",
+              "type": "string"
+            },
+            {
+              "id": "d2ff9625-5cbf-7ab5-6230-48b8725867b7",
+              "name": "cache_days",
+              "value": 30,
+              "type": "number"
+            },
+            {
+              "id": "66e2337d-b308-ec6a-371a-ae446232c9aa",
+              "name": "cost_per_lookup_usd",
+              "value": "={{ Number($env.ENRICHMENT_COST_USD || 0.02) }}",
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        140,
+        120
+      ],
+      "id": "8c3fbebc-508a-50ac-0454-50dec62e6ed4",
+      "name": "Provider Config",
+      "notes": "Set ENRICHMENT_PROVIDER to primary, fallback or none. 'none' makes the pack run with zero enrichment spend.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT payload, fetched_at FROM enrichment_cache\nWHERE domain = lower('{{ $json.domain }}')\n  AND fetched_at > NOW() - INTERVAL '{{ $json.cache_days }} days'\nLIMIT 1;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        400,
+        120
+      ],
+      "id": "0f7a4572-629b-9a60-f514-0e4d17943691",
+      "name": "Cache Lookup",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c7eb51ec-d7a9-fcc6-444d-74cd7e7ffc0f",
+              "leftValue": "={{ $json.payload !== undefined && $json.payload !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        120
+      ],
+      "id": "0a4acecb-9e53-f3a3-f62e-e01339b0cf1b",
+      "name": "Cache Hit?"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Cache hits are free. Most agencies re-enrich the same domains constantly.\nreturn $input.all().map((item) => ({ json: { enrichment: item.json.payload, cached: true, cost_usd: 0 } }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        120
+      ],
+      "id": "de3a857b-02cd-533e-3f21-eb8a607a8944",
+      "name": "Return Cached"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e6b48207-29ea-8fe9-b5ac-2a00357c6288",
+                    "leftValue": "={{ $('Provider Config').item.json.provider }}",
+                    "rightValue": "primary",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "primary"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b8dd5ae6-d7f1-00c1-9a68-a7691734b564",
+                    "leftValue": "={{ $('Provider Config').item.json.provider }}",
+                    "rightValue": "fallback",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "fallback"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e164fcfe-a3b4-5d30-a1d7-eda73a07b23d",
+                    "leftValue": "={{ $('Provider Config').item.json.provider }}",
+                    "rightValue": "none",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "none"
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        920,
+        290
+      ],
+      "id": "6ac57a55-3126-4e73-dff3-11aa4311567b",
+      "name": "Select Provider"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.ENRICHMENT_BASE_URL }}/v1/company",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "domain",
+              "value": "={{ $('Cache Lookup').item.json.domain || $('Called By Workflow').item.json.domain }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "36102caf-eae0-9f02-d6ce-1caf317d8f9c",
+      "name": "Enrich Via Primary",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_ENRICHMENT_CREDENTIAL_ID",
+          "name": "Enrichment header auth"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.ENRICHMENT_FALLBACK_URL }}/company",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "domain",
+              "value": "={{ $('Called By Workflow').item.json.domain }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        290
+      ],
+      "id": "14dce1de-e834-6534-4e4a-9afb05b14300",
+      "name": "Enrich Via Fallback",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_ENRICHMENT_FALLBACK_CREDENTIAL_ID",
+          "name": "Enrichment Fallback header auth"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        460
+      ],
+      "id": "54bea744-b372-b8d8-f60c-10aa6fcc5ac0",
+      "name": "Skip Enrichment",
+      "notes": "Provider 'none' - the pack still works, leads just score on form data.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Every provider returns a different shape. Normalise to one contract so the\n// scoring rubric never learns a vendor's field names.\nfunction firstOf(obj, paths) {\n  for (const p of paths) {\n    const v = p.split('.').reduce((acc, k) => (acc && acc[k] !== undefined ? acc[k] : undefined), obj);\n    if (v !== undefined && v !== null && v !== '') return v;\n  }\n  return null;\n}\nreturn $input.all().map((item) => {\n  const raw = item.json;\n  const enrichment = {\n    company: firstOf(raw, ['name', 'company.name', 'organization.name']),\n    domain: firstOf(raw, ['domain', 'company.domain', 'website']),\n    company_size: Number(firstOf(raw, ['employees', 'metrics.employees', 'company.employeesRange']) || 0) || null,\n    industry: firstOf(raw, ['industry', 'category.industry', 'company.industry']),\n    country: firstOf(raw, ['country', 'geo.country', 'location.country']),\n    tech: firstOf(raw, ['tech', 'technologies', 'tech_stack']) || [],\n    socials: {\n      linkedin: firstOf(raw, ['linkedin.handle', 'socials.linkedin']),\n      instagram: firstOf(raw, ['instagram.handle', 'socials.instagram'])\n    },\n    provider: $('Provider Config').first().json.provider,\n    fetched_at: new Date().toISOString()\n  };\n  const usable = Boolean(enrichment.company || enrichment.company_size || enrichment.industry);\n  return { json: { enrichment, cached: false, usable, cost_usd: usable ? $('Provider Config').first().json.cost_per_lookup_usd : 0 } };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        120
+      ],
+      "id": "8beef91b-ad96-a740-b2b8-3221a1d70876",
+      "name": "Normalize Provider Response"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO enrichment_cache (domain, payload, provider, fetched_at)\nVALUES (lower('{{ $json.enrichment.domain }}'), '{{ JSON.stringify($json.enrichment) }}'::jsonb,\n        '{{ $json.enrichment.provider }}', NOW())\nON CONFLICT (domain) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = NOW();",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1700,
+        120
+      ],
+      "id": "9126e537-2018-5ad4-98a4-8ba30e2b9ed4",
+      "name": "Write Cache",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO spend_ledger (workflow, item, amount_usd, occurred_at)\nVALUES ('06-domain-enrichment', 'enrichment_lookup', {{ $json.cost_usd }}, NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1960,
+        120
+      ],
+      "id": "93dd9071-5c40-c448-cb3a-809dfb4a474b",
+      "name": "Record Provider Spend",
+      "notes": "This is what the rails read when they enforce the daily spend cap.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().map((item) => ({ json: {\n  enrichment: item.json.enrichment || null,\n  cached: Boolean(item.json.cached),\n  cost_usd: Number(item.json.cost_usd || 0)\n} }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        120
+      ],
+      "id": "c84c83c7-2fe1-a2ac-8e95-f6ad3b40f5dc",
+      "name": "Return Enrichment"
+    }
+  ],
+  "connections": {
+    "Called By Workflow": {
+      "main": [
+        [
+          {
+            "node": "Provider Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Provider Config": {
+      "main": [
+        [
+          {
+            "node": "Cache Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Lookup": {
+      "main": [
+        [
+          {
+            "node": "Cache Hit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Hit?": {
+      "main": [
+        [
+          {
+            "node": "Return Cached",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Select Provider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Provider": {
+      "main": [
+        [
+          {
+            "node": "Enrich Via Primary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enrich Via Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Via Primary": {
+      "main": [
+        [
+          {
+            "node": "Normalize Provider Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Via Fallback": {
+      "main": [
+        [
+          {
+            "node": "Normalize Provider Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Normalize Provider Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Provider Response": {
+      "main": [
+        [
+          {
+            "node": "Write Cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Cache": {
+      "main": [
+        [
+          {
+            "node": "Record Provider Spend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Provider Spend": {
+      "main": [
+        [
+          {
+            "node": "Return Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Company size, industry, tech and socials from a domain, behind a cache and a pluggable provider interface.",
+    "safety_rails": "Does not gate on the rails - it never contacts a prospect. It does spend money, so it writes every paid lookup to the spend ledger the rails read for the daily cap.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "enrichment"
+    }
+  ],
+  "versionId": "01657b55-7cdf-b687-fd35-bdbf54125179"
+}

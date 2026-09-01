@@ -1,0 +1,590 @@
+{
+  "name": "11-followup-sequence Followup Sequence",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 11 Followup Sequence\n\nMulti-touch follow-up that stops on any reply, respects opt-out and quiet hours, and caps its own steps.\n\n**Safety rails:** Calls 16-safety-rails before any outbound action.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "bb1abaf6-e293-a05f-c3cb-2b1b18a7229c",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "6e84fe7b-5995-3915-6755-732a3b0ed4d5",
+      "name": "Every 15 Minutes"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT q.id, q.lead_email, q.lead_phone, q.lead_handle, q.channel, q.template, q.step,\n       l.last_inbound_message, l.replied_at, l.consent_basis, l.consent_recorded_at,\n       (s.identifier IS NOT NULL) AS suppressed\nFROM followup_queue q\nLEFT JOIN leads l ON l.email_key = lower(q.lead_email)\nLEFT JOIN suppression_list s ON s.identifier = lower(q.lead_email)\nWHERE q.sent_at IS NULL AND q.cancelled_at IS NULL AND q.send_after <= NOW()\nORDER BY q.send_after ASC\nLIMIT 100;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        140,
+        120
+      ],
+      "id": "cf996ca6-dff5-c442-c58d-5e4bf183bbfb",
+      "name": "Load Due Touches",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Source of truth: logic/optout.js. A reply stops the sequence, full stop.\n// Precedence: kill switch > suppression > opt-out keyword > replied > continue.\nconst OPT_OUT_KEYWORDS = [\n  'stop', 'stopall', 'unsubscribe', 'opt out', 'optout', 'opt-out',\n  'remove me', 'take me off', 'do not contact', 'dnc', 'cancel', 'quit', 'end'\n];\nconst FALSE_POSITIVE_PHRASES = ['stop by', 'stop in', 'non stop', 'nonstop', 'one stop', 'stop light',\n  'cancel my other', 'end of the month', 'end of month', 'weekend', 'quit my job', 'front end', 'back end'];\nfunction normalize(t) {\n  return String(t || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\\s+/g, ' ').trim();\n}\nfunction isOptOut(text) {\n  let msg = normalize(text);\n  if (!msg) return false;\n  for (const p of FALSE_POSITIVE_PHRASES) { if (msg.includes(p)) msg = normalize(msg.split(p).join(' ')); }\n  if (!msg) return false;\n  const words = msg.split(' ');\n  for (const kw of OPT_OUT_KEYWORDS) {\n    if (msg === kw) return true;\n    if (kw.includes(' ') && msg.includes(kw)) return true;\n    if (words.length <= 4 && words.includes(kw)) return true;\n  }\n  return false;\n}\nreturn $input.all().map((item) => {\n  const r = item.json;\n  const optedOut = isOptOut(r.last_inbound_message);\n  const replied = Boolean(r.replied_at);\n  const stopped = optedOut || replied || r.suppressed === true;\n  return { json: Object.assign({}, r, {\n    stopped,\n    stop_reason: r.suppressed === true ? 'suppressed' : (optedOut ? 'opt_out' : (replied ? 'replied' : null)),\n    lead: { email: r.lead_email, phone: r.lead_phone, handle: r.lead_handle,\n            last_inbound_message: r.last_inbound_message,\n            consent_basis: r.consent_basis, consent_recorded_at: r.consent_recorded_at }\n  }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        120
+      ],
+      "id": "d9d60593-6969-b4c6-0333-5245510309c3",
+      "name": "Check Reply Or Opt Out"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4e72ff8b-0ece-9d2c-3552-76c4c7dca515",
+              "leftValue": "={{ $json.stopped === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        120
+      ],
+      "id": "d20893c4-7739-6a49-7f73-8b51e2cc9e29",
+      "name": "Sequence Stopped?"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE followup_queue SET cancelled_at = NOW(), cancel_reason = '{{ $json.stop_reason }}'\nWHERE lead_email = '{{ $json.lead_email }}' AND sent_at IS NULL AND cancelled_at IS NULL;\nINSERT INTO suppression_list (identifier, identifier_type, reason, source, created_at)\nSELECT lower('{{ $json.lead_email }}'), 'email', 'opt_out', '11-followup-sequence', NOW()\nWHERE '{{ $json.stop_reason }}' = 'opt_out'\nON CONFLICT (identifier, identifier_type) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        920,
+        120
+      ],
+      "id": "cd31e491-09a8-0d4c-5b92-d074dda6455f",
+      "name": "Cancel Sequence",
+      "notes": "Cancels every remaining step, not just the current one, and suppresses on opt-out.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build the request the rails expect. Missing fields are denied, not defaulted:\n// the rails fail closed on purpose.\nreturn $input.all().map((item) => {\n  const lead = item.json.lead || item.json;\n  return { json: Object.assign({}, item.json, { rails_request: {\n    channel: 'origin',\n    purpose: 'followup',\n    contact_email: lead.email || '',\n    contact_phone: lead.phone || '',\n    contact_handle: lead.handle || '',\n    inbound_message: lead.last_inbound_message || '',\n    consent: { basis: lead.consent_basis || null, recorded_at: lead.consent_recorded_at || null },\n    estimated_cost_usd: Number(lead.estimated_cost_usd || 0),\n    workflow: $workflow.name\n  } }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        290
+      ],
+      "id": "97355a26-b111-9f7f-d5a6-99e2913641f8",
+      "name": "Build Rails Request",
+      "notes": "Neutral request shape consumed by 16-safety-rails.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_16_SAFETY_RAILS_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "payload": "={{ JSON.stringify($json.rails_request) }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "668199b8-ff74-6b25-05e5-887fe2a405b2",
+      "name": "Safety Rails",
+      "notes": "Calls 16-safety-rails. Nothing that can reach a prospect runs before the rails return allowed=true.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3813bbe0-60f9-07a5-9ae2-9188311cf432",
+              "leftValue": "={{ $json.allowed === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        120
+      ],
+      "id": "297eb833-5c1e-f015-530a-9af0c038b017",
+      "name": "Rails Allowed?",
+      "notes": "False branch is a dead end by design.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The rails said no. Record it and stop. A denied action is never retried.\nreturn $input.all().map((item) => ({ json: {\n  blocked: true,\n  code: item.json.code || 'denied',\n  reason: item.json.reason || 'Safety rails denied this action.',\n  contact: item.json.rails_request ? item.json.rails_request.contact_email : null,\n  workflow: $workflow.name,\n  at: new Date().toISOString()\n} }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        120
+      ],
+      "id": "6be6d287-69c2-dc07-cad9-56faa6ccb1b9",
+      "name": "Log Blocked"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO touch_log (lead_id, workflow, channel, direction, detail, occurred_at)\nVALUES (NULL, '{{ $json.workflow }}', 'origin', 'blocked',\n        jsonb_build_object('code', '{{ $json.code }}', 'reason', '{{ $json.reason }}'), NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1960,
+        120
+      ],
+      "id": "117e0154-676b-603f-3f18-615c2c2a1b6f",
+      "name": "Persist Block",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Source of truth: logic/hours.js. Quiet hours wrap midnight, so this is not a\n// simple range check.\nconst HOURS_DEFAULTS = {\n  timezone: 'UTC',\n  business_days: [1, 2, 3, 4, 5],\n  business_start_hour: 9,\n  business_end_hour: 17,\n  quiet_start_hour: 21,\n  quiet_end_hour: 8\n};\nconst cfg = Object.assign({}, HOURS_DEFAULTS, {\n  timezone: $env.BUSINESS_TIMEZONE || HOURS_DEFAULTS.timezone,\n  quiet_start_hour: Number($env.QUIET_START_HOUR || HOURS_DEFAULTS.quiet_start_hour),\n  quiet_end_hour: Number($env.QUIET_END_HOUR || HOURS_DEFAULTS.quiet_end_hour)\n});\nfunction localParts(when) {\n  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: cfg.timezone, hour12: false,\n    weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });\n  const p = {};\n  fmt.formatToParts(new Date(when)).forEach((x) => { p[x.type] = x.value; });\n  const dow = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[p.weekday];\n  return { year: +p.year, month: +p.month, day: +p.day, hour: (+p.hour) % 24, minute: +p.minute, dow };\n}\nfunction fromLocal(parts) {\n  const guess = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute || 0);\n  let ts = guess;\n  for (let i = 0; i < 3; i++) {\n    const p = localParts(new Date(ts));\n    const drift = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) - guess;\n    if (drift === 0) break;\n    ts -= drift;\n  }\n  return new Date(ts);\n}\nfunction isQuiet(when) {\n  const p = localParts(when);\n  const s = cfg.quiet_start_hour; const e = cfg.quiet_end_hour;\n  if (s === e) return false;\n  return s < e ? (p.hour >= s && p.hour < e) : (p.hour >= s || p.hour < e);\n}\nconst now = new Date();\nreturn $input.all().map((item) => {\n  const quiet = isQuiet(now);\n  let sendAfter = now.toISOString();\n  if (quiet) {\n    const p = localParts(now);\n    const rollsOver = cfg.quiet_start_hour > cfg.quiet_end_hour && p.hour >= cfg.quiet_start_hour;\n    const base = fromLocal({ year: p.year, month: p.month, day: p.day, hour: 12, minute: 0 });\n    const t = rollsOver ? localParts(new Date(base.getTime() + 24 * 3600 * 1000)) : p;\n    sendAfter = fromLocal({ year: t.year, month: t.month, day: t.day, hour: cfg.quiet_end_hour, minute: 0 }).toISOString();\n  }\n  return { json: Object.assign({}, item.json, { quiet_hours: quiet, send_now: !quiet, send_after: sendAfter }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        290
+      ],
+      "id": "5e3e1e55-0acf-7276-e24a-9eaf02e7face",
+      "name": "Quiet Hours Gate"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c29e6cb9-0c3c-8b10-1ae1-1aa5b96a2bd3",
+              "leftValue": "={{ $json.send_now === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        290
+      ],
+      "id": "37929127-f063-8c7f-468e-6ba4d07b60a5",
+      "name": "Send Now?"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE followup_queue SET send_after = '{{ $json.send_after }}'::timestamptz\nWHERE id = {{ $json.id }};",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2220,
+        120
+      ],
+      "id": "44942eac-df2c-fc4e-7d68-d4e562c34387",
+      "name": "Defer Touch",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MESSAGING_BASE_URL }}/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.lead_email || $json.lead_phone || $json.lead_handle, channel: $json.channel, template: $json.template, step: $json.step }) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2220,
+        290
+      ],
+      "id": "b8fc5aa1-0ca8-8132-565d-ba6cef6a76f0",
+      "name": "Send Touch",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_MESSAGING_CREDENTIAL_ID",
+          "name": "Messaging header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE followup_queue SET sent_at = NOW() WHERE id = {{ $json.id }};\nINSERT INTO touch_log (lead_id, workflow, channel, direction, detail, occurred_at)\nVALUES (NULL, '11-followup-sequence', '{{ $json.channel }}', 'outbound',\n        jsonb_build_object('template', '{{ $json.template }}', 'step', '{{ $json.step }}'), NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2480,
+        120
+      ],
+      "id": "b0deeb03-046b-48b4-48f2-457b9a369282",
+      "name": "Log Touch",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO followup_queue (lead_email, lead_phone, lead_handle, channel, template, step, send_after, created_at)\nSELECT '{{ $json.lead_email }}', '{{ $json.lead_phone }}', '{{ $json.lead_handle }}',\n       '{{ $json.channel }}', '{{ $json.template }}', {{ $json.step }} + 1,\n       NOW() + (INTERVAL '1 day' * COALESCE(NULLIF('{{ $env.FOLLOWUP_GAP_DAYS }}', '')::int, 3)), NOW()\nWHERE {{ $json.step }} + 1 <= COALESCE(NULLIF('{{ $env.FOLLOWUP_MAX_STEPS }}', '')::int, 4);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2740,
+        120
+      ],
+      "id": "e5148261-c3b8-5ab6-414e-ae068dc1f455",
+      "name": "Schedule Next Touch",
+      "notes": "Hard cap on steps. A sequence that cannot end is a complaint generator.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Load Due Touches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Due Touches": {
+      "main": [
+        [
+          {
+            "node": "Check Reply Or Opt Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Reply Or Opt Out": {
+      "main": [
+        [
+          {
+            "node": "Sequence Stopped?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sequence Stopped?": {
+      "main": [
+        [
+          {
+            "node": "Cancel Sequence",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Rails Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Rails Request": {
+      "main": [
+        [
+          {
+            "node": "Safety Rails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Safety Rails": {
+      "main": [
+        [
+          {
+            "node": "Rails Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rails Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Quiet Hours Gate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Blocked": {
+      "main": [
+        [
+          {
+            "node": "Persist Block",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quiet Hours Gate": {
+      "main": [
+        [
+          {
+            "node": "Send Now?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Now?": {
+      "main": [
+        [
+          {
+            "node": "Send Touch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Defer Touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Touch": {
+      "main": [
+        [
+          {
+            "node": "Log Touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Touch": {
+      "main": [
+        [
+          {
+            "node": "Schedule Next Touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Multi-touch follow-up that stops on any reply, respects opt-out and quiet hours, and caps its own steps.",
+    "safety_rails": "Calls 16-safety-rails before any outbound action.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "engage"
+    },
+    {
+      "name": "nurture"
+    }
+  ],
+  "versionId": "e1a4fc77-3b51-acc3-cfec-8d7b6ded3297"
+}

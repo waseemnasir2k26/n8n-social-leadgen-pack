@@ -1,0 +1,256 @@
+{
+  "name": "14-source-attribution Source Attribution",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 14 Source Attribution\n\nStitches UTM and referrer data into first-touch and last-touch attribution on every lead.\n\n**Safety rails:** Does not call the rails. It writes attribution fields to your own CRM and database and never contacts a lead.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "e0ea1fdf-ac21-ff3d-9ed9-963bd78dac87",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "51ebfaea-0de7-9711-be7e-4a81a1eabcc3",
+      "name": "Called By Capture Flow"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// UTMs arrive as a query string, an object, or not at all. Normalise all three,\n// and keep the referrer as a fallback so direct traffic is not simply \"unknown\".\nfunction fromQuery(qs) {\n  const out = {};\n  String(qs || '').replace(/^\\?/, '').split('&').forEach((pair) => {\n    if (!pair) return;\n    const [k, v] = pair.split('=');\n    out[decodeURIComponent(k)] = decodeURIComponent(v || '');\n  });\n  return out;\n}\nreturn $input.all().map((item) => {\n  const src = item.json;\n  const q = typeof src.query_string === 'string' ? fromQuery(src.query_string) : (src.utm || src.query || {});\n  const referrer = src.referrer || src.referer || '';\n  let channel = q.utm_medium || '';\n  if (!channel && referrer) {\n    if (/instagram|facebook|tiktok|linkedin|x\\.com|twitter/i.test(referrer)) channel = 'social';\n    else if (/google|bing|duckduckgo/i.test(referrer)) channel = 'organic_search';\n    else channel = 'referral';\n  }\n  return { json: Object.assign({}, src, { touch: {\n    email: (src.email || (src.lead && src.lead.email) || '').toLowerCase(),\n    utm_source: q.utm_source || '',\n    utm_medium: q.utm_medium || '',\n    utm_campaign: q.utm_campaign || '',\n    utm_content: q.utm_content || '',\n    utm_term: q.utm_term || '',\n    referrer,\n    channel: channel || 'direct',\n    landing_page: src.landing_page || src.page || '',\n    occurred_at: src.occurred_at || new Date().toISOString()\n  } }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        120
+      ],
+      "id": "8b5169f9-4cc6-1a74-8178-d864f60b4aba",
+      "name": "Parse UTM"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO attribution_touches (lead_email, utm_source, utm_medium, utm_campaign,\n                                 utm_content, referrer, channel, landing_page, occurred_at)\nVALUES (nullif('{{ $json.touch.email }}', ''), '{{ $json.touch.utm_source }}',\n        '{{ $json.touch.utm_medium }}', '{{ $json.touch.utm_campaign }}',\n        '{{ $json.touch.utm_content }}', '{{ $json.touch.referrer }}',\n        '{{ $json.touch.channel }}', '{{ $json.touch.landing_page }}',\n        '{{ $json.touch.occurred_at }}'::timestamptz);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        400,
+        120
+      ],
+      "id": "205af102-b250-e43b-ccec-1c3db334d468",
+      "name": "Record Touch",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT utm_source, utm_medium, utm_campaign, channel, landing_page, occurred_at\nFROM attribution_touches\nWHERE lead_email = lower(nullif('{{ $('Parse UTM').item.json.touch.email }}', ''))\nORDER BY occurred_at ASC\nLIMIT 200;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        660,
+        120
+      ],
+      "id": "c368030f-f0af-2b39-37e3-6aa19f359ffb",
+      "name": "Fetch Touch History",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// First touch gets the credit for creating demand, last touch for capturing it.\n// Both are stored - arguing about which one is \"right\" is not this pack's job.\nconst touches = $input.all().map((i) => i.json).filter((t) => t.occurred_at);\ntouches.sort((a, b) => new Date(a.occurred_at) - new Date(b.occurred_at));\nconst first = touches[0] || null;\nconst last = touches[touches.length - 1] || null;\nconst email = $('Parse UTM').first().json.touch.email;\nconst label = (t) => (t ? [t.utm_source || t.channel, t.utm_campaign].filter(Boolean).join(' / ') : 'unknown');\nreturn [{ json: {\n  lead: { email },\n  attribution: {\n    first_touch: label(first),\n    first_touch_at: first ? first.occurred_at : null,\n    last_touch: label(last),\n    last_touch_at: last ? last.occurred_at : null,\n    touch_count: touches.length,\n    path: touches.map((t) => t.utm_source || t.channel).join(' > ')\n  }\n} }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        120
+      ],
+      "id": "a84aa0e8-dc23-a1ab-17d7-5b039b3b474a",
+      "name": "Stitch First And Last Touch"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.CRM_BASE_URL }}/leads/attribution",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ match: { email: $json.lead.email }, attribution: $json.attribution }) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "e365a952-98a6-b4b8-17e0-342a0936d0df",
+      "name": "Write Attribution To CRM",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CRM_CREDENTIAL_ID",
+          "name": "Crm header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE leads SET first_touch = '{{ $json.attribution.first_touch }}',\n       last_touch = '{{ $json.attribution.last_touch }}',\n       touch_count = {{ $json.attribution.touch_count }},\n       attribution_path = '{{ $json.attribution.path }}', updated_at = NOW()\nWHERE email_key = lower(nullif('{{ $json.lead.email }}', ''));",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1440,
+        120
+      ],
+      "id": "4c089815-bc39-316b-2ae0-66f17c3efeea",
+      "name": "Persist Attribution",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Called By Capture Flow": {
+      "main": [
+        [
+          {
+            "node": "Parse UTM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse UTM": {
+      "main": [
+        [
+          {
+            "node": "Record Touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Touch": {
+      "main": [
+        [
+          {
+            "node": "Fetch Touch History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Touch History": {
+      "main": [
+        [
+          {
+            "node": "Stitch First And Last Touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stitch First And Last Touch": {
+      "main": [
+        [
+          {
+            "node": "Write Attribution To CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Attribution To CRM": {
+      "main": [
+        [
+          {
+            "node": "Persist Attribution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Stitches UTM and referrer data into first-touch and last-touch attribution on every lead.",
+    "safety_rails": "Does not call the rails. It writes attribution fields to your own CRM and database and never contacts a lead.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "attribution"
+    }
+  ],
+  "versionId": "4b1a9b8c-d708-6ded-adb2-bd241cfb059d"
+}

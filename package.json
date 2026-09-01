@@ -1,0 +1,16 @@
+{
+  "name": "n8n-social-leadgen-pack",
+  "version": "1.0.0",
+  "description": "16 production-shaped n8n workflows that turn social and web activity into qualified leads in a CRM, with safety rails.",
+  "license": "MIT",
+  "author": "Waseem Nasir / SkynetLabs",
+  "private": true,
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\" && python tests/validate_workflows.py",
+    "test:logic": "node --test \"tests/*.test.js\"",
+    "test:workflows": "python tests/validate_workflows.py"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

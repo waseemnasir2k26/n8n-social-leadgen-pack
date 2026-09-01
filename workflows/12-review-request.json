@@ -1,0 +1,475 @@
+{
+  "name": "12-review-request Review Request",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 12 Review Request\n\nTimed post-delivery review ask, one per customer, enforced by a unique constraint.\n\n**Safety rails:** Calls 16-safety-rails before any outbound action.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "15f72322-9b19-bdb8-6f51-a525856b3d67",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "triggerAtHour": 10,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "578ae39c-f278-02d3-a62b-f52e7e07596a",
+      "name": "Daily 10:00"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT j.id AS job_id, j.lead_id, j.delivered_at, l.email, l.phone, l.name,\n       l.consent_basis, l.consent_recorded_at,\n       (r.id IS NOT NULL) AS already_requested,\n       (s.identifier IS NOT NULL) AS suppressed\nFROM jobs j\nJOIN leads l ON l.id = j.lead_id\nLEFT JOIN review_requests r ON r.lead_id = j.lead_id\nLEFT JOIN suppression_list s ON s.identifier = l.email_key\nWHERE j.delivered_at BETWEEN NOW() - INTERVAL '10 days' AND NOW() - INTERVAL '3 days'\nORDER BY j.delivered_at ASC\nLIMIT 100;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        140,
+        120
+      ],
+      "id": "b2ab0f6a-8099-f444-1358-c4f281e71b10",
+      "name": "Load Delivered Jobs",
+      "notes": "Three days after delivery, not the same afternoon. Ten-day ceiling so stale jobs do not get asked months later.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// One review request per customer, ever. Repeat asks are the fastest way to turn\n// a happy client into a complaint.\nreturn $input.all().map((item) => {\n  const r = item.json;\n  const eligible = !r.already_requested && !r.suppressed && Boolean(r.email || r.phone);\n  return { json: Object.assign({}, r, {\n    eligible,\n    skip_reason: r.already_requested ? 'already_requested' : (r.suppressed ? 'suppressed' : (eligible ? null : 'no_contact_method')),\n    lead: { email: r.email, phone: r.phone, name: r.name,\n            consent_basis: r.consent_basis, consent_recorded_at: r.consent_recorded_at }\n  }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        120
+      ],
+      "id": "dc11d2bd-b74a-eeec-6173-61ccf34e0567",
+      "name": "One Per Customer Guard"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "04c33a94-6551-c8b4-5e1e-a4868bd804b8",
+              "leftValue": "={{ $json.eligible === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        120
+      ],
+      "id": "40c162d6-d1a1-7a0c-8263-2e3903aed7cb",
+      "name": "Eligible?"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        920,
+        120
+      ],
+      "id": "4d10f7c2-de1f-dc7e-f714-97a709e43834",
+      "name": "Skip Customer"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build the request the rails expect. Missing fields are denied, not defaulted:\n// the rails fail closed on purpose.\nreturn $input.all().map((item) => {\n  const lead = item.json.lead || item.json;\n  return { json: Object.assign({}, item.json, { rails_request: {\n    channel: 'origin',\n    purpose: 'review_request',\n    contact_email: lead.email || '',\n    contact_phone: lead.phone || '',\n    contact_handle: lead.handle || '',\n    inbound_message: lead.last_inbound_message || '',\n    consent: { basis: lead.consent_basis || null, recorded_at: lead.consent_recorded_at || null },\n    estimated_cost_usd: Number(lead.estimated_cost_usd || 0),\n    workflow: $workflow.name\n  } }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        290
+      ],
+      "id": "526cebfb-958c-9a95-14f2-fc611835d0c1",
+      "name": "Build Rails Request",
+      "notes": "Neutral request shape consumed by 16-safety-rails.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_16_SAFETY_RAILS_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "payload": "={{ JSON.stringify($json.rails_request) }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "38c4aab0-58e5-d82b-20d1-adfa63833af0",
+      "name": "Safety Rails",
+      "notes": "Calls 16-safety-rails. Nothing that can reach a prospect runs before the rails return allowed=true.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bfa0dd04-29d4-864e-4252-d32f372d9f9b",
+              "leftValue": "={{ $json.allowed === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        120
+      ],
+      "id": "eae054cb-8273-5066-3209-e64896f0b3b1",
+      "name": "Rails Allowed?",
+      "notes": "False branch is a dead end by design.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The rails said no. Record it and stop. A denied action is never retried.\nreturn $input.all().map((item) => ({ json: {\n  blocked: true,\n  code: item.json.code || 'denied',\n  reason: item.json.reason || 'Safety rails denied this action.',\n  contact: item.json.rails_request ? item.json.rails_request.contact_email : null,\n  workflow: $workflow.name,\n  at: new Date().toISOString()\n} }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        120
+      ],
+      "id": "e94b878e-f177-6492-8156-8d7037d96f93",
+      "name": "Log Blocked"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO touch_log (lead_id, workflow, channel, direction, detail, occurred_at)\nVALUES (NULL, '{{ $json.workflow }}', 'origin', 'blocked',\n        jsonb_build_object('code', '{{ $json.code }}', 'reason', '{{ $json.reason }}'), NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1960,
+        120
+      ],
+      "id": "f1d66f99-0052-bb31-3e75-de966ad18122",
+      "name": "Persist Block",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Ask on the channel they already used. Email default, SMS only where we hold a\n// number and a lawful basis for texting.\nreturn $input.all().map((item) => {\n  const lead = item.json.lead || {};\n  const channel = lead.email ? 'email' : 'sms';\n  return { json: Object.assign({}, item.json, { channel, review_url: $env.REVIEW_URL || 'https://example.com/review' }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        290
+      ],
+      "id": "ddcb08aa-04c8-06d2-85c9-31738a36421b",
+      "name": "Pick Channel"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MESSAGING_BASE_URL }}/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.lead.email || $json.lead.phone, channel: $json.channel, template: 'review_request', vars: { name: $json.lead.name, review_url: $json.review_url } }) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        290
+      ],
+      "id": "99e18e45-35c3-ff27-9983-4552b806d250",
+      "name": "Send Review Request",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_MESSAGING_CREDENTIAL_ID",
+          "name": "Messaging header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO review_requests (lead_id, job_id, channel, requested_at)\nVALUES ({{ $json.lead_id }}, {{ $json.job_id }}, '{{ $json.channel }}', NOW())\nON CONFLICT (lead_id) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2220,
+        120
+      ],
+      "id": "752f0883-2e0c-e402-164c-d5fd41f724d3",
+      "name": "Mark Review Requested",
+      "notes": "The unique constraint on lead_id is what actually guarantees one-per-customer.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 10:00": {
+      "main": [
+        [
+          {
+            "node": "Load Delivered Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Delivered Jobs": {
+      "main": [
+        [
+          {
+            "node": "One Per Customer Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One Per Customer Guard": {
+      "main": [
+        [
+          {
+            "node": "Eligible?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Eligible?": {
+      "main": [
+        [
+          {
+            "node": "Build Rails Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Rails Request": {
+      "main": [
+        [
+          {
+            "node": "Safety Rails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Safety Rails": {
+      "main": [
+        [
+          {
+            "node": "Rails Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rails Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Pick Channel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Blocked": {
+      "main": [
+        [
+          {
+            "node": "Persist Block",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Channel": {
+      "main": [
+        [
+          {
+            "node": "Send Review Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Review Request": {
+      "main": [
+        [
+          {
+            "node": "Mark Review Requested",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Timed post-delivery review ask, one per customer, enforced by a unique constraint.",
+    "safety_rails": "Calls 16-safety-rails before any outbound action.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "engage"
+    },
+    {
+      "name": "reputation"
+    }
+  ],
+  "versionId": "fc3175a5-5f68-ee16-0daa-c39fe95db7b4"
+}

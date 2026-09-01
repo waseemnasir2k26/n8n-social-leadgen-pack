@@ -1,0 +1,600 @@
+{
+  "name": "03-facebook-lead-ads-sync Facebook Lead Ads Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 03 Facebook Lead Ads Sync\n\nMeta Lead Ads webhook to a validated, deduped CRM record with an instant first reply.\n\n**Safety rails:** Calls 16-safety-rails before any outbound action.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "d4fbfaaa-f0b8-ae22-0e61-be01c5a165ef",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leadgen/fb-lead-ads",
+        "responseMode": "lastNode",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "972e1c12-b7ab-9faf-a9dd-5e5d05a3c183",
+      "name": "FB Lead Webhook",
+      "notes": "Subscribe the page to the leadgen field in your Meta app.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Meta only sends an id - the lead body is fetched separately. Validate first:\n// a webhook with no leadgen_id is either a test ping or someone probing your URL.\nreturn $input.all().map((item) => {\n  const body = item.json.body || item.json;\n  const headers = item.json.headers || {};\n  const entry = (body.entry && body.entry[0]) || {};\n  const change = (entry.changes && entry.changes[0]) || {};\n  const value = change.value || {};\n  const valid = Boolean(value.leadgen_id) && Boolean(headers['x-hub-signature-256']);\n  return { json: {\n    valid,\n    reason: valid ? 'ok' : 'missing leadgen_id or x-hub-signature-256 header',\n    leadgen_id: value.leadgen_id || '',\n    form_id: value.form_id || '',\n    page_id: value.page_id || '',\n    campaign: value.ad_id || ''\n  } };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        120
+      ],
+      "id": "0abe41c8-dbcc-370f-2edc-d63cd9b55b6d",
+      "name": "Verify Payload",
+      "notes": "Signature verification itself belongs in a reverse proxy or the Webhook node's auth - this node only rejects structurally invalid payloads.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "83933bca-23c7-96f1-db99-4ca9967d1025",
+              "leftValue": "={{ $json.valid === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        120
+      ],
+      "id": "765a0b2a-2ff8-0be3-b883-ebc1db429350",
+      "name": "Payload Valid?"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        660,
+        120
+      ],
+      "id": "ede9918d-3d3a-0f22-1afb-233d26c37b81",
+      "name": "Reject Invalid Payload",
+      "notes": "Dead end. Do not create leads from unverified payloads.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.META_GRAPH_BASE_URL }}/{{ $json.leadgen_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "field_data,created_time,ad_id,form_id"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        290
+      ],
+      "id": "f9fa888b-d124-5c0f-ed62-4e4c8db949f6",
+      "name": "Fetch Lead Detail",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_META_CREDENTIAL_ID",
+          "name": "Meta header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// field_data is an array of {name, values:[]}. Flatten it, then map to the neutral shape.\nreturn $input.all().map((item) => {\n  const flat = {};\n  for (const f of item.json.field_data || []) {\n    flat[String(f.name).toLowerCase()] = Array.isArray(f.values) ? f.values[0] : f.values;\n  }\n  const lead = {\n    email: String(flat.email || flat.work_email || '').trim().toLowerCase(),\n    phone: String(flat.phone_number || flat.phone || '').trim(),\n    name: String(flat.full_name || [flat.first_name, flat.last_name].filter(Boolean).join(' ') || '').trim(),\n    company: String(flat.company_name || '').trim(),\n    source: 'facebook_lead_ads',\n    campaign: item.json.ad_id || '',\n    // Lead Ads carry the consent the user gave on the form itself.\n    consent_basis: 'consent',\n    consent_recorded_at: item.json.created_time || new Date().toISOString(),\n    requested_call: /call|quote|demo/i.test(JSON.stringify(flat)),\n    received_at: new Date().toISOString()\n  };\n  if (!lead.email && !lead.phone) throw new Error('Lead Ads form returned neither email nor phone.');\n  return { json: { lead } };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        120
+      ],
+      "id": "89abefe0-402d-e445-4485-ae379c1a8a86",
+      "name": "Normalize FB Lead"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build the request the rails expect. Missing fields are denied, not defaulted:\n// the rails fail closed on purpose.\nreturn $input.all().map((item) => {\n  const lead = item.json.lead || item.json;\n  return { json: Object.assign({}, item.json, { rails_request: {\n    channel: 'email',\n    purpose: 'instant_reply',\n    contact_email: lead.email || '',\n    contact_phone: lead.phone || '',\n    contact_handle: lead.handle || '',\n    inbound_message: lead.last_inbound_message || '',\n    consent: { basis: lead.consent_basis || null, recorded_at: lead.consent_recorded_at || null },\n    estimated_cost_usd: Number(lead.estimated_cost_usd || 0),\n    workflow: $workflow.name\n  } }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "178267be-36e8-4ced-4594-8601e8c4c8dc",
+      "name": "Build Rails Request",
+      "notes": "Neutral request shape consumed by 16-safety-rails.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_16_SAFETY_RAILS_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "payload": "={{ JSON.stringify($json.rails_request) }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        120
+      ],
+      "id": "7e97ed97-3f5b-c8e7-768f-eccac8ba7738",
+      "name": "Safety Rails",
+      "notes": "Calls 16-safety-rails. Nothing that can reach a prospect runs before the rails return allowed=true.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fd7a5d37-8a99-b626-10fc-ae0570a168a4",
+              "leftValue": "={{ $json.allowed === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1700,
+        120
+      ],
+      "id": "63039d18-75c1-3f1b-b3ee-bbb6ae3f0ba7",
+      "name": "Rails Allowed?",
+      "notes": "False branch is a dead end by design.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The rails said no. Record it and stop. A denied action is never retried.\nreturn $input.all().map((item) => ({ json: {\n  blocked: true,\n  code: item.json.code || 'denied',\n  reason: item.json.reason || 'Safety rails denied this action.',\n  contact: item.json.rails_request ? item.json.rails_request.contact_email : null,\n  workflow: $workflow.name,\n  at: new Date().toISOString()\n} }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        120
+      ],
+      "id": "dda790b3-bbf7-ec10-df1d-89137055d727",
+      "name": "Log Blocked"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO touch_log (lead_id, workflow, channel, direction, detail, occurred_at)\nVALUES (NULL, '{{ $json.workflow }}', 'email', 'blocked',\n        jsonb_build_object('code', '{{ $json.code }}', 'reason', '{{ $json.reason }}'), NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2220,
+        120
+      ],
+      "id": "dc462188-14f4-c963-4e79-096de42ce807",
+      "name": "Persist Block",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT id FROM leads\nWHERE email_key = lower(nullif('{{ $json.lead.email }}', ''))\n   OR phone_key = right(regexp_replace(nullif('{{ $json.lead.phone }}', ''), '[^0-9]', '', 'g'), 10)\nLIMIT 1;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1960,
+        290
+      ],
+      "id": "1e3e990f-6aae-e9f4-f118-2abba200575e",
+      "name": "Dedupe Check",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Source of truth: logic/crm.js. Set CRM_ADAPTER (env var) to the CRM you run.\n// Supported: 'generic' (any REST CRM), 'hubspot', 'gohighlevel', 'pipedrive'.\n// See docs/CRM-MAPPING.md before adding a new one.\nconst CRM_ADAPTERS = ['generic', 'hubspot', 'gohighlevel', 'pipedrive'];\nconst CRM_ADAPTER = $env.CRM_ADAPTER || 'generic';\n\nfunction nonEmpty(o) {\n  const out = {};\n  for (const k of Object.keys(o)) {\n    const v = o[k];\n    if (v !== null && v !== undefined && v !== '') out[k] = v;\n  }\n  return out;\n}\nfunction splitName(name) {\n  const n = (name || '').trim();\n  if (!n) return { first: '', last: '' };\n  const p = n.split(/\\s+/);\n  return { first: p[0], last: p.slice(1).join(' ') };\n}\nfunction toCrmPayload(l) {\n  const name = splitName(l.name);\n  const tags = Array.isArray(l.tags) ? l.tags.slice() : [];\n  if (l.band) tags.push('score:' + l.band);\n  if (l.source) tags.push('source:' + l.source);\n  if (CRM_ADAPTER === 'hubspot') {\n    return { properties: nonEmpty({ email: l.email, phone: l.phone, firstname: name.first,\n      lastname: name.last, company: l.company, hs_lead_status: l.band === 'hot' ? 'OPEN' : 'NEW',\n      lifecyclestage: 'lead', lead_score_custom: l.score,\n      lead_score_reasons: (l.score_reasons || []).join('; ') }) };\n  }\n  if (CRM_ADAPTER === 'gohighlevel') {\n    return nonEmpty({ email: l.email, phone: l.phone, firstName: name.first, lastName: name.last,\n      companyName: l.company, source: l.source, tags: tags, customFields: [\n        { key: 'lead_score', field_value: String(l.score === undefined ? '' : l.score) },\n        { key: 'lead_band', field_value: l.band || '' },\n        { key: 'consent_basis', field_value: l.consent_basis || '' } ] });\n  }\n  if (CRM_ADAPTER === 'pipedrive') {\n    return nonEmpty({ name: l.name, org_name: l.company, label: l.band, visible_to: '3' });\n  }\n  return nonEmpty({ email: l.email, phone: l.phone, name: l.name, company: l.company,\n    domain: l.domain, source: l.source, campaign: l.campaign, score: l.score, band: l.band,\n    score_reasons: l.score_reasons, consent_basis: l.consent_basis, tags: tags, notes: l.notes });\n}\n\nreturn $input.all().map((item) => {\n  const lead = Object.assign({ source: '%s' }, item.json.lead || item.json);\n  return { json: Object.assign({}, item.json, {\n    lead,\n    crm_adapter: CRM_ADAPTER,\n    crm_payload: toCrmPayload(lead),\n    crm_match_value: lead.email || lead.phone || lead.name || ''\n  }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        290
+      ],
+      "id": "d4973e1c-347f-0c62-2062-177eac225ac5",
+      "name": "CRM Adapter Map"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/leads/upsert",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.crm_payload) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2480,
+        120
+      ],
+      "id": "8f0da125-71a5-4487-89a4-74813a563ba5",
+      "name": "CRM Upsert",
+      "notes": "One HTTP node, one mapping node. Swap CRM by changing CRM_BASE_URL, the credential and CRM_ADAPTER. See docs/CRM-MAPPING.md.",
+      "notesInFlow": false,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CRM_CREDENTIAL_ID",
+          "name": "Crm header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MESSAGING_BASE_URL }}/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.lead.email || $json.lead.phone, template: 'lead_ads_instant_reply', vars: { name: $json.lead.name } }) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2740,
+        120
+      ],
+      "id": "bfba47e5-ff3d-e588-dd8f-33a22e9c110f",
+      "name": "Send Instant Reply",
+      "notes": "Speed matters more than polish here. Keep it to one short message with a booking link.",
+      "notesInFlow": false,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_MESSAGING_CREDENTIAL_ID",
+          "name": "Messaging header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO touch_log (lead_id, workflow, channel, direction, detail, occurred_at)\nVALUES (NULL, '03-facebook-lead-ads-sync', 'email', 'outbound',\n        jsonb_build_object('type', 'instant_reply'), NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3000,
+        120
+      ],
+      "id": "690acb09-0a8c-7458-3213-adeebe7c7e17",
+      "name": "Log Touch",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "FB Lead Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Payload": {
+      "main": [
+        [
+          {
+            "node": "Payload Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload Valid?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Lead Detail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject Invalid Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Lead Detail": {
+      "main": [
+        [
+          {
+            "node": "Normalize FB Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize FB Lead": {
+      "main": [
+        [
+          {
+            "node": "Build Rails Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Rails Request": {
+      "main": [
+        [
+          {
+            "node": "Safety Rails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Safety Rails": {
+      "main": [
+        [
+          {
+            "node": "Rails Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rails Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Dedupe Check",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Blocked": {
+      "main": [
+        [
+          {
+            "node": "Persist Block",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedupe Check": {
+      "main": [
+        [
+          {
+            "node": "CRM Adapter Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Adapter Map": {
+      "main": [
+        [
+          {
+            "node": "CRM Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Upsert": {
+      "main": [
+        [
+          {
+            "node": "Send Instant Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Instant Reply": {
+      "main": [
+        [
+          {
+            "node": "Log Touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Meta Lead Ads webhook to a validated, deduped CRM record with an instant first reply.",
+    "safety_rails": "Calls 16-safety-rails before any outbound action.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "capture"
+    },
+    {
+      "name": "paid-social"
+    }
+  ],
+  "versionId": "c34a37d4-f30a-ad8f-143b-99f65d842a99"
+}

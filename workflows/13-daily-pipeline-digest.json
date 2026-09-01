@@ -1,0 +1,305 @@
+{
+  "name": "13-daily-pipeline-digest Daily Pipeline Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 13 Daily Pipeline Digest\n\nEvery morning: new leads by source, stalled deals, and response-time SLA breaches, to Slack and email.\n\n**Safety rails:** Does not call the rails. It reports to your own Slack channel and inbox and never contacts a lead. The kill switch does not silence reporting on purpose - when sending is off you still want to see the pipeline.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "40fcc219-9d83-6fc4-f051-6d85650db92c",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "triggerAtHour": 7,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "b5293e60-5a6c-55ca-4357-58db8f825cf9",
+      "name": "Daily 07:00"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT source, band, COUNT(*) AS n\nFROM leads\nWHERE created_at > NOW() - INTERVAL '1 day' AND merged_into IS NULL\nGROUP BY source, band\nORDER BY n DESC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        140,
+        120
+      ],
+      "id": "47dbfcd2-8fd2-f6d0-c6b6-26c14367d90b",
+      "name": "New Leads Query",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name, email, band, last_touch_at\nFROM leads\nWHERE merged_into IS NULL AND status IN ('open', 'working')\n  AND last_touch_at < NOW() - INTERVAL '7 days'\nORDER BY last_touch_at ASC\nLIMIT 25;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        140,
+        290
+      ],
+      "id": "6367f47f-ef53-3604-3f59-29a0dfdc6448",
+      "name": "Stalled Deals Query",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name, email, source, created_at, first_response_at,\n       EXTRACT(EPOCH FROM (COALESCE(first_response_at, NOW()) - created_at)) / 60 AS minutes_to_first_response\nFROM leads\nWHERE created_at > NOW() - INTERVAL '1 day'\n  AND (first_response_at IS NULL OR first_response_at - created_at > INTERVAL '5 minutes')\nORDER BY created_at ASC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        140,
+        460
+      ],
+      "id": "455ac145-0e77-78cc-1d92-b11bbeadba46",
+      "name": "SLA Breach Query",
+      "notes": "Five minutes is the pack's default SLA. Change it here and in the README cost table if your promise is different.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "numberInputs": 3,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        400,
+        120
+      ],
+      "id": "8cddf1f8-0b1b-808a-bf36-7f9283f1610d",
+      "name": "Merge Sections"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Three query results arrive on three inputs. Group them by shape, not by order,\n// so a query returning zero rows cannot shift the sections.\nconst rows = $input.all().map((i) => i.json);\nconst newLeads = rows.filter((r) => r.n !== undefined);\nconst stalled = rows.filter((r) => r.last_touch_at !== undefined);\nconst breaches = rows.filter((r) => r.minutes_to_first_response !== undefined);\n\nconst totalNew = newLeads.reduce((s, r) => s + Number(r.n || 0), 0);\nconst bySource = newLeads.map((r) => '  ' + (r.source || 'unknown') + ' / ' + (r.band || 'unscored') + ': ' + r.n).join('\\n');\nconst stalledLines = stalled.slice(0, 10).map((r) => '  ' + (r.name || r.email || r.id) + ' - last touch ' + String(r.last_touch_at).slice(0, 10)).join('\\n');\nconst breachLines = breaches.slice(0, 10).map((r) => '  ' + (r.name || r.email || r.id) + ' - ' + Math.round(Number(r.minutes_to_first_response || 0)) + ' min').join('\\n');\n\nconst text = [\n  'Pipeline digest ' + new Date().toISOString().slice(0, 10),\n  '',\n  'New leads (24h): ' + totalNew,\n  bySource || '  none',\n  '',\n  'Stalled (no touch in 7 days): ' + stalled.length,\n  stalledLines || '  none',\n  '',\n  'Response-time SLA breaches (24h): ' + breaches.length,\n  breachLines || '  none'\n].join('\\n');\n\nreturn [{ json: { text, total_new: totalNew, stalled: stalled.length, breaches: breaches.length } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        120
+      ],
+      "id": "829429d9-caaa-bb8e-af22-d792568532f6",
+      "name": "Build Digest"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SLACK_CHANNEL_ID",
+          "mode": "id"
+        },
+        "text": "={{ $json.text }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        920,
+        120
+      ],
+      "id": "c6cbd4fa-e76a-c413-725e-c9a7145d6f87",
+      "name": "Post Digest To Slack",
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "REPLACE_WITH_YOUR_FROM_ADDRESS",
+        "toEmail": "REPLACE_WITH_YOUR_TEAM_ADDRESS",
+        "subject": "=Pipeline digest - {{ $json.total_new }} new, {{ $json.breaches }} SLA breaches",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "ba473ef4-6c3c-a411-219f-d2389586552c",
+      "name": "Email Digest",
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_WITH_YOUR_SMTP_CREDENTIAL_ID",
+          "name": "Outbound SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 07:00": {
+      "main": [
+        [
+          {
+            "node": "New Leads Query",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Stalled Deals Query",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "SLA Breach Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New Leads Query": {
+      "main": [
+        [
+          {
+            "node": "Merge Sections",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stalled Deals Query": {
+      "main": [
+        [
+          {
+            "node": "Merge Sections",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "SLA Breach Query": {
+      "main": [
+        [
+          {
+            "node": "Merge Sections",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge Sections": {
+      "main": [
+        [
+          {
+            "node": "Build Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Digest": {
+      "main": [
+        [
+          {
+            "node": "Post Digest To Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Digest To Slack": {
+      "main": [
+        [
+          {
+            "node": "Email Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Every morning: new leads by source, stalled deals, and response-time SLA breaches, to Slack and email.",
+    "safety_rails": "Does not call the rails. It reports to your own Slack channel and inbox and never contacts a lead. The kill switch does not silence reporting on purpose - when sending is off you still want to see the pipeline.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "reporting"
+    }
+  ],
+  "versionId": "4ceb0cec-3177-af2b-7174-282cbb38538c"
+}

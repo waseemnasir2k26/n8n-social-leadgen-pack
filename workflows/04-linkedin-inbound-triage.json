@@ -1,0 +1,625 @@
+{
+  "name": "04-linkedin-inbound-triage LinkedIn Inbound Triage",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 04 LinkedIn Inbound Triage\n\nClassifies inbound LinkedIn contacts into lead, recruiter, spam or peer and routes each accordingly.\n\n**Safety rails:** Calls 16-safety-rails before any outbound action.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "2e460e92-7350-a091-d30c-91820e17084f",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "76d5ac6f-c2d6-87a1-1a2e-0f523244f7e9",
+      "name": "Every Morning 08:00",
+      "notes": "LinkedIn has no general inbound-message API. This reads an export you drop somewhere the instance can fetch - see docs/SETUP.md.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.LINKEDIN_EXPORT_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        140,
+        120
+      ],
+      "id": "53bab325-0f84-8472-220f-e09e96d2e556",
+      "name": "Fetch Inbound Export",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_LINKEDIN_EXPORT_CREDENTIAL_ID",
+          "name": "Linkedin Export header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Accepts either a JSON array or a CSV string. One item per contact.\nfunction parseCsv(text) {\n  const lines = String(text).split(/\\r?\\n/).filter((l) => l.trim() !== '');\n  if (!lines.length) return [];\n  const head = lines[0].split(',').map((h) => h.trim().toLowerCase());\n  return lines.slice(1).map((line) => {\n    const cells = line.split(',');\n    const row = {};\n    head.forEach((h, i) => { row[h] = (cells[i] || '').trim(); });\n    return row;\n  });\n}\nconst out = [];\nfor (const item of $input.all()) {\n  const data = item.json.data !== undefined ? item.json.data : item.json;\n  const rows = Array.isArray(data) ? data : (typeof data === 'string' ? parseCsv(data) : [data]);\n  for (const r of rows) {\n    out.push({ json: { lead: {\n      name: r.name || r.full_name || '',\n      handle: r.profile || r.profile_url || '',\n      company: r.company || r.current_company || '',\n      title: r.title || r.headline || '',\n      last_inbound_message: r.message || r.note || '',\n      email: (r.email || '').toLowerCase(),\n      source: 'linkedin_inbound',\n      consent_basis: 'legitimate_interest',\n      consent_recorded_at: new Date().toISOString()\n    } } });\n  }\n}\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        120
+      ],
+      "id": "1821e30f-ef40-6356-da36-621c2c77e60a",
+      "name": "Parse Export Rows"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Four buckets. Recruiters and peers are not leads and must not enter the sales pipeline.\nconst RECRUITER = ['recruiter', 'talent', 'hiring for', 'opportunity at', 'staffing', 'headhunter'];\nconst SPAM = ['guaranteed leads', 'seo services', 'ranking', 'crypto', 'investment opportunity', 'buy followers', 'cheap developers'];\nconst PEER = ['agency owner', 'founder', 'let us connect', 'love your content', 'fellow'];\nconst BUYING = ['need help', 'looking for', 'can you build', 'quote', 'proposal', 'budget', 'project', 'hire you'];\nreturn $input.all().map((item) => {\n  const lead = item.json.lead || {};\n  const text = [lead.last_inbound_message, lead.title].join(' ').toLowerCase();\n  const hit = (l) => l.some((k) => text.includes(k));\n  let bucket = 'peer';\n  if (hit(SPAM)) bucket = 'spam';\n  else if (hit(RECRUITER)) bucket = 'recruiter';\n  else if (hit(BUYING)) bucket = 'lead';\n  return { json: Object.assign({}, item.json, { bucket, lead: Object.assign({}, lead, { bucket }) }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        120
+      ],
+      "id": "d0a3719e-5b9b-66d3-f8d8-9200523331ea",
+      "name": "Classify Contact"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "3ab4f3df-c2f7-5187-d130-c8c56ec29e5b",
+                    "leftValue": "={{ $json.bucket }}",
+                    "rightValue": "lead",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "lead"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "5b5a339e-8e8e-5e01-3ff3-4f0b7981b22c",
+                    "leftValue": "={{ $json.bucket }}",
+                    "rightValue": "recruiter",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "recruiter"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "7728a1b7-99d0-ba03-2729-847a16ce24a9",
+                    "leftValue": "={{ $json.bucket }}",
+                    "rightValue": "spam",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "spam"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "165c2899-3915-0f81-e464-820495900f30",
+                    "leftValue": "={{ $json.bucket }}",
+                    "rightValue": "peer",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "peer"
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        920,
+        120
+      ],
+      "id": "115afcdf-125f-cc17-76cf-08593b083932",
+      "name": "Route By Class"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build the request the rails expect. Missing fields are denied, not defaulted:\n// the rails fail closed on purpose.\nreturn $input.all().map((item) => {\n  const lead = item.json.lead || item.json;\n  return { json: Object.assign({}, item.json, { rails_request: {\n    channel: 'linkedin',\n    purpose: 'crm_write',\n    contact_email: lead.email || '',\n    contact_phone: lead.phone || '',\n    contact_handle: lead.handle || '',\n    inbound_message: lead.last_inbound_message || '',\n    consent: { basis: lead.consent_basis || null, recorded_at: lead.consent_recorded_at || null },\n    estimated_cost_usd: Number(lead.estimated_cost_usd || 0),\n    workflow: $workflow.name\n  } }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "227e6d2c-d77b-4c20-9d30-70a4cc680b05",
+      "name": "Build Rails Request",
+      "notes": "Neutral request shape consumed by 16-safety-rails.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_16_SAFETY_RAILS_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "payload": "={{ JSON.stringify($json.rails_request) }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        120
+      ],
+      "id": "02e3aecd-ab9d-9e05-55b6-360611075905",
+      "name": "Safety Rails",
+      "notes": "Calls 16-safety-rails. Nothing that can reach a prospect runs before the rails return allowed=true.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f5fdbc03-0ddf-9324-1ab6-682459b30ef8",
+              "leftValue": "={{ $json.allowed === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1700,
+        120
+      ],
+      "id": "1d8fe99a-9d9b-9a04-6273-dc71e6a9bb6e",
+      "name": "Rails Allowed?",
+      "notes": "False branch is a dead end by design.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The rails said no. Record it and stop. A denied action is never retried.\nreturn $input.all().map((item) => ({ json: {\n  blocked: true,\n  code: item.json.code || 'denied',\n  reason: item.json.reason || 'Safety rails denied this action.',\n  contact: item.json.rails_request ? item.json.rails_request.contact_email : null,\n  workflow: $workflow.name,\n  at: new Date().toISOString()\n} }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        120
+      ],
+      "id": "3fb6d523-ea7f-6cbb-fa41-b45d2cc415b5",
+      "name": "Log Blocked"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO touch_log (lead_id, workflow, channel, direction, detail, occurred_at)\nVALUES (NULL, '{{ $json.workflow }}', 'linkedin', 'blocked',\n        jsonb_build_object('code', '{{ $json.code }}', 'reason', '{{ $json.reason }}'), NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2220,
+        120
+      ],
+      "id": "d9441073-83c9-1630-0b98-cfed94367571",
+      "name": "Persist Block",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Source of truth: logic/crm.js. Set CRM_ADAPTER (env var) to the CRM you run.\n// Supported: 'generic' (any REST CRM), 'hubspot', 'gohighlevel', 'pipedrive'.\n// See docs/CRM-MAPPING.md before adding a new one.\nconst CRM_ADAPTERS = ['generic', 'hubspot', 'gohighlevel', 'pipedrive'];\nconst CRM_ADAPTER = $env.CRM_ADAPTER || 'generic';\n\nfunction nonEmpty(o) {\n  const out = {};\n  for (const k of Object.keys(o)) {\n    const v = o[k];\n    if (v !== null && v !== undefined && v !== '') out[k] = v;\n  }\n  return out;\n}\nfunction splitName(name) {\n  const n = (name || '').trim();\n  if (!n) return { first: '', last: '' };\n  const p = n.split(/\\s+/);\n  return { first: p[0], last: p.slice(1).join(' ') };\n}\nfunction toCrmPayload(l) {\n  const name = splitName(l.name);\n  const tags = Array.isArray(l.tags) ? l.tags.slice() : [];\n  if (l.band) tags.push('score:' + l.band);\n  if (l.source) tags.push('source:' + l.source);\n  if (CRM_ADAPTER === 'hubspot') {\n    return { properties: nonEmpty({ email: l.email, phone: l.phone, firstname: name.first,\n      lastname: name.last, company: l.company, hs_lead_status: l.band === 'hot' ? 'OPEN' : 'NEW',\n      lifecyclestage: 'lead', lead_score_custom: l.score,\n      lead_score_reasons: (l.score_reasons || []).join('; ') }) };\n  }\n  if (CRM_ADAPTER === 'gohighlevel') {\n    return nonEmpty({ email: l.email, phone: l.phone, firstName: name.first, lastName: name.last,\n      companyName: l.company, source: l.source, tags: tags, customFields: [\n        { key: 'lead_score', field_value: String(l.score === undefined ? '' : l.score) },\n        { key: 'lead_band', field_value: l.band || '' },\n        { key: 'consent_basis', field_value: l.consent_basis || '' } ] });\n  }\n  if (CRM_ADAPTER === 'pipedrive') {\n    return nonEmpty({ name: l.name, org_name: l.company, label: l.band, visible_to: '3' });\n  }\n  return nonEmpty({ email: l.email, phone: l.phone, name: l.name, company: l.company,\n    domain: l.domain, source: l.source, campaign: l.campaign, score: l.score, band: l.band,\n    score_reasons: l.score_reasons, consent_basis: l.consent_basis, tags: tags, notes: l.notes });\n}\n\nreturn $input.all().map((item) => {\n  const lead = Object.assign({ source: '%s' }, item.json.lead || item.json);\n  return { json: Object.assign({}, item.json, {\n    lead,\n    crm_adapter: CRM_ADAPTER,\n    crm_payload: toCrmPayload(lead),\n    crm_match_value: lead.email || lead.phone || lead.name || ''\n  }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        290
+      ],
+      "id": "dd63dbca-1ec0-d2c7-fd8b-d21bc495cbd0",
+      "name": "CRM Adapter Map"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/leads/upsert",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.crm_payload) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2220,
+        290
+      ],
+      "id": "79079130-b402-330c-5a4d-aa1d299c51b9",
+      "name": "CRM Upsert",
+      "notes": "One HTTP node, one mapping node. Swap CRM by changing CRM_BASE_URL, the credential and CRM_ADAPTER. See docs/CRM-MAPPING.md.",
+      "notesInFlow": false,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CRM_CREDENTIAL_ID",
+          "name": "Crm header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO touch_log (lead_id, workflow, channel, direction, detail, occurred_at)\nVALUES (NULL, '04-linkedin-inbound-triage', 'linkedin', 'inbound',\n        jsonb_build_object('bucket', 'recruiter'), NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1180,
+        290
+      ],
+      "id": "460f2ad8-028b-1f61-4444-3852a9001440",
+      "name": "Log Recruiter",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO suppression_list (identifier, identifier_type, reason, source, created_at)\nVALUES (lower(nullif('{{ $json.lead.handle }}', '')), 'handle', 'linkedin_spam',\n        '04-linkedin-inbound-triage', NOW())\nON CONFLICT (identifier, identifier_type) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1180,
+        460
+      ],
+      "id": "a2a60a1f-4710-7c56-fdd5-938c6aae5370",
+      "name": "Add To Suppression",
+      "notes": "Spam goes on the suppression list so no other workflow in the pack ever contacts it.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO touch_log (lead_id, workflow, channel, direction, detail, occurred_at)\nVALUES (NULL, '04-linkedin-inbound-triage', 'linkedin', 'inbound',\n        jsonb_build_object('bucket', 'peer'), NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1180,
+        630
+      ],
+      "id": "4cb6f1ec-9a2b-df6c-6187-53578ada3cf3",
+      "name": "Log Peer",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every Morning 08:00": {
+      "main": [
+        [
+          {
+            "node": "Fetch Inbound Export",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Inbound Export": {
+      "main": [
+        [
+          {
+            "node": "Parse Export Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Export Rows": {
+      "main": [
+        [
+          {
+            "node": "Classify Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Contact": {
+      "main": [
+        [
+          {
+            "node": "Route By Class",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route By Class": {
+      "main": [
+        [
+          {
+            "node": "Build Rails Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Recruiter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add To Suppression",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Peer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Rails Request": {
+      "main": [
+        [
+          {
+            "node": "Safety Rails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Safety Rails": {
+      "main": [
+        [
+          {
+            "node": "Rails Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rails Allowed?": {
+      "main": [
+        [
+          {
+            "node": "CRM Adapter Map",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Blocked": {
+      "main": [
+        [
+          {
+            "node": "Persist Block",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Adapter Map": {
+      "main": [
+        [
+          {
+            "node": "CRM Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Classifies inbound LinkedIn contacts into lead, recruiter, spam or peer and routes each accordingly.",
+    "safety_rails": "Calls 16-safety-rails before any outbound action.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "capture"
+    },
+    {
+      "name": "triage"
+    }
+  ],
+  "versionId": "32c672ee-54a7-c5e3-912a-180f8e46c693"
+}

@@ -1,0 +1,271 @@
+{
+  "name": "15-content-to-lead-tracker Content To Lead Tracker",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 15 Content To Lead Tracker\n\nTies each published post, video or repo to the leads and pipeline it actually produced.\n\n**Safety rails:** Does not call the rails. Read-only reporting over your own database, with one Slack post to your own channel.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "73533398-1505-fcdf-d61b-5f33ab2420f7",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "054ca1e1-288d-f58c-89c3-14c7acf46504",
+      "name": "Weekly Monday 08:00"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, slug, title, platform, url, published_at\nFROM content_registry\nWHERE published_at > NOW() - INTERVAL '180 days'\nORDER BY published_at DESC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        140,
+        120
+      ],
+      "id": "ba5ad596-0d0b-dbfe-7eb9-05248e0faba6",
+      "name": "Load Content Registry",
+      "notes": "You maintain this table. One row per post, video or repo you publish.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT l.id, l.email, l.band, l.value_usd, l.first_touch, l.attribution_path, l.created_at\nFROM leads l\nWHERE l.created_at > NOW() - INTERVAL '180 days' AND l.merged_into IS NULL;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        140,
+        290
+      ],
+      "id": "eb1de11a-d9f1-4472-0257-d2608804c387",
+      "name": "Load Attributed Leads",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "numberInputs": 2,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        400,
+        120
+      ],
+      "id": "0025eddf-8774-3e2c-f387-74301bc70208",
+      "name": "Merge Content And Leads"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Match leads to content by slug appearing anywhere in the attribution path or\n// utm_content. Unmatched leads are reported as unattributed rather than\n// distributed across content - inventing attribution is worse than admitting none.\nconst rows = $input.all().map((i) => i.json);\nconst content = rows.filter((r) => r.slug !== undefined);\nconst leads = rows.filter((r) => r.email !== undefined);\n\nconst byContent = content.map((c) => {\n  const matched = leads.filter((l) => String(l.attribution_path || '').toLowerCase().includes(String(c.slug).toLowerCase())\n    || String(l.first_touch || '').toLowerCase().includes(String(c.slug).toLowerCase()));\n  return {\n    slug: c.slug, title: c.title, platform: c.platform, url: c.url,\n    published_at: c.published_at,\n    leads: matched.length,\n    hot_leads: matched.filter((l) => l.band === 'hot').length,\n    pipeline_usd: matched.reduce((s, l) => s + Number(l.value_usd || 0), 0)\n  };\n}).sort((a, b) => b.pipeline_usd - a.pipeline_usd || b.leads - a.leads);\n\nconst attributed = byContent.reduce((s, c) => s + c.leads, 0);\nreturn byContent.map((c) => ({ json: Object.assign({}, c, {\n  total_leads: leads.length,\n  unattributed_leads: leads.length - attributed\n}) }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        120
+      ],
+      "id": "b6b405e1-e38e-0e25-93b6-e6f061220641",
+      "name": "Attribute Pipeline To Content"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO content_performance (slug, period_end, leads, hot_leads, pipeline_usd, computed_at)\nVALUES ('{{ $json.slug }}', CURRENT_DATE, {{ $json.leads }}, {{ $json.hot_leads }},\n        {{ $json.pipeline_usd }}, NOW())\nON CONFLICT (slug, period_end) DO UPDATE\nSET leads = EXCLUDED.leads, hot_leads = EXCLUDED.hot_leads,\n    pipeline_usd = EXCLUDED.pipeline_usd, computed_at = NOW();",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        920,
+        120
+      ],
+      "id": "19c51f21-044a-cfff-6078-f312d59bc096",
+      "name": "Write Content Performance",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SLACK_CHANNEL_ID",
+          "mode": "id"
+        },
+        "text": "=Content to pipeline (180d): {{ $json.slug }} - {{ $json.leads }} leads, {{ $json.hot_leads }} hot, {{ $json.pipeline_usd }} USD. Unattributed leads in period: {{ $json.unattributed_leads }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "5b7a51d8-445a-de07-1124-25dcbe5eeebd",
+      "name": "Post Content Report",
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack workspace"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Weekly Monday 08:00": {
+      "main": [
+        [
+          {
+            "node": "Load Content Registry",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Load Attributed Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Content Registry": {
+      "main": [
+        [
+          {
+            "node": "Merge Content And Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Attributed Leads": {
+      "main": [
+        [
+          {
+            "node": "Merge Content And Leads",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Content And Leads": {
+      "main": [
+        [
+          {
+            "node": "Attribute Pipeline To Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attribute Pipeline To Content": {
+      "main": [
+        [
+          {
+            "node": "Write Content Performance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Content Performance": {
+      "main": [
+        [
+          {
+            "node": "Post Content Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Ties each published post, video or repo to the leads and pipeline it actually produced.",
+    "safety_rails": "Does not call the rails. Read-only reporting over your own database, with one Slack post to your own channel.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "reporting"
+    },
+    {
+      "name": "content"
+    }
+  ],
+  "versionId": "652796ec-f5bd-0659-3bc2-d563899da8c5"
+}

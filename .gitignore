@@ -1,0 +1,38 @@
+# Never commit real credentials or exported instance data
+.env
+.env.*
+*.local
+credentials.json
+credentials*.json
+*-credentials.json
+n8n-export/
+exports/
+backups/
+*.dump
+*.sql.gz
+
+# Anything that looks like a filled-in copy of the pack
+workflows/*.local.json
+workflows/*-configured.json
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+package-lock.json
+.pnpm-store/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp

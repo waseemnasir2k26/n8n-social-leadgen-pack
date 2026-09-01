@@ -1,0 +1,335 @@
+{
+  "name": "05-lead-scoring-engine Lead Scoring Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 05 Lead Scoring Engine\n\nConfigurable firmographic and behavioural rubric that writes score, band and reasons back to the CRM.\n\n**Safety rails:** Does not call the rails. This workflow performs no outbound contact and spends nothing - it reads a lead, computes a score and writes it back. The workflow that acts on the score is the one that must call the rails.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "607a349d-aaae-c7fb-fde0-e14e2d2a75eb",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "e1d7d61b-1b64-0df0-d718-a092cacaf98a",
+      "name": "Called By Workflow",
+      "notes": "Sub-workflow. Called by 01, 03 and 08, or manually for a backfill.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "8b929c2f-7662-6586-9ce6-ccb62a050241",
+              "name": "hot_threshold",
+              "value": 60,
+              "type": "number"
+            },
+            {
+              "id": "fc3bab5c-daee-229d-1e0f-4a1dd7579a3c",
+              "name": "review_threshold",
+              "value": 35,
+              "type": "number"
+            },
+            {
+              "id": "09759eab-9243-ce4b-b201-64fd109548a4",
+              "name": "rubric_version",
+              "value": "2026.09",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        140,
+        120
+      ],
+      "id": "74b10729-b1b1-1a38-8f83-df5df84cffc6",
+      "name": "Load Rubric Config",
+      "notes": "Thresholds live here so you can retune without touching code.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Source of truth: logic/scoring.js (unit tested in tests/scoring.test.js).\nconst SCORING_WEIGHTS = {\n  has_business_email: 15,\n  company_size_11_50: 10,\n  company_size_51_200: 15,\n  company_size_200_plus: 20,\n  budget_stated: 20,\n  timeline_under_30d: 15,\n  requested_call: 20,\n  replied_within_1h: 10,\n  competitor_page_view: 10,\n  free_email_domain: -10,\n  student_or_jobseeker: -25,\n  outside_service_area: -15\n};\n\nconst SCORE_BANDS = [\n  { name: 'hot', min: 60 },\n  { name: 'warm', min: 35 },\n  { name: 'cold', min: 15 },\n  { name: 'junk', min: 0 }\n];\n\nconst FREE_EMAIL_DOMAINS = ['gmail.com','yahoo.com','hotmail.com','outlook.com','live.com','aol.com','icloud.com','proton.me','protonmail.com','gmx.com','mail.com'];\n\nfunction bandFor(score) {\n  for (const b of SCORE_BANDS) { if (score >= b.min) return b.name; }\n  return 'junk';\n}\n\nfunction scoreLead(l) {\n  const reasons = [];\n  let raw = 0;\n  const add = (sig) => {\n    const pts = SCORING_WEIGHTS[sig];\n    if (typeof pts !== 'number') return;\n    raw += pts;\n    reasons.push(sig + ' ' + (pts > 0 ? '+' : '') + pts);\n  };\n  const email = typeof l.email === 'string' ? l.email.trim().toLowerCase() : '';\n  const domain = email.includes('@') ? email.split('@').pop() : '';\n  const free = domain !== '' && FREE_EMAIL_DOMAINS.includes(domain);\n  if (email && !free) add('has_business_email');\n  if (free) add('free_email_domain');\n  const size = Number(l.company_size);\n  if (Number.isFinite(size)) {\n    if (size >= 200) add('company_size_200_plus');\n    else if (size >= 51) add('company_size_51_200');\n    else if (size >= 11) add('company_size_11_50');\n  }\n  if (l.budget_stated === true || Number(l.budget_amount) > 0) add('budget_stated');\n  const days = Number(l.timeline_days);\n  if (Number.isFinite(days) && days > 0 && days <= 30) add('timeline_under_30d');\n  if (l.requested_call === true) add('requested_call');\n  if (l.replied_within_minutes !== undefined && Number(l.replied_within_minutes) <= 60) add('replied_within_1h');\n  if (l.viewed_competitor_page === true) add('competitor_page_view');\n  if (l.is_student === true || l.is_jobseeker === true) add('student_or_jobseeker');\n  if (l.in_service_area === false) add('outside_service_area');\n  const score = Math.max(0, Math.min(100, raw));\n  return { score, band: bandFor(score), reasons };\n}\n\nreturn $input.all().map((item) => {\n  const lead = item.json.lead || item.json;\n  const s = scoreLead(lead);\n  return { json: Object.assign({}, item.json, {\n    lead: Object.assign({}, lead, { score: s.score, band: s.band, score_reasons: s.reasons })\n  }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        120
+      ],
+      "id": "ca39d866-1eb3-5ade-f83c-d160198b78b9",
+      "name": "Score Lead"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4f80a9b5-5ee6-da41-c79e-c9ebbb16be8a",
+              "leftValue": "={{ $json.lead.score }}",
+              "rightValue": "={{ $('Load Rubric Config').item.json.hot_threshold }}",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        120
+      ],
+      "id": "0f2d7d0f-fd92-15e3-d5b7-ec9b18d68d6c",
+      "name": "Above Hot Threshold?"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SLACK_CHANNEL_ID",
+          "mode": "id"
+        },
+        "text": "=Hot lead {{ $json.lead.name || $json.lead.email }} scored {{ $json.lead.score }} ({{ $json.lead.score_reasons.join(', ') }})",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        920,
+        120
+      ],
+      "id": "e9482674-2a10-8c4a-bee8-de5f2d1bbbf2",
+      "name": "Alert On Hot Lead",
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.CRM_BASE_URL }}/leads/score",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ match: { email: $json.lead.email }, score: $json.lead.score, band: $json.lead.band, reasons: $json.lead.score_reasons, rubric_version: $('Load Rubric Config').item.json.rubric_version }) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "40b992f6-3e79-9eb0-859d-c3179dbe3670",
+      "name": "Write Score To CRM",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CRM_CREDENTIAL_ID",
+          "name": "Crm header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE leads SET score = {{ $('Score Lead').item.json.lead.score }},\n       band = '{{ $('Score Lead').item.json.lead.band }}',\n       score_reasons = '{{ JSON.stringify($('Score Lead').item.json.lead.score_reasons) }}'::jsonb,\n       scored_at = NOW()\nWHERE email_key = lower(nullif('{{ $('Score Lead').item.json.lead.email }}', ''));",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1440,
+        120
+      ],
+      "id": "524ecdc7-7f87-fcaa-4fda-5582f0af7fe1",
+      "name": "Persist Score",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Return value for the caller. Keep the shape stable - three workflows read it.\nconst scored = $('Score Lead').all();\nreturn scored.map((item) => ({ json: {\n  lead: item.json.lead,\n  score: item.json.lead.score,\n  band: item.json.lead.band,\n  reasons: item.json.lead.score_reasons,\n  rubric_version: $('Load Rubric Config').first().json.rubric_version\n} }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        120
+      ],
+      "id": "5f5d6eaf-7f4b-ac1b-33f3-1be09cda7dd7",
+      "name": "Return Scored Lead"
+    }
+  ],
+  "connections": {
+    "Called By Workflow": {
+      "main": [
+        [
+          {
+            "node": "Load Rubric Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Rubric Config": {
+      "main": [
+        [
+          {
+            "node": "Score Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Lead": {
+      "main": [
+        [
+          {
+            "node": "Above Hot Threshold?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Above Hot Threshold?": {
+      "main": [
+        [
+          {
+            "node": "Alert On Hot Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Write Score To CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert On Hot Lead": {
+      "main": [
+        [
+          {
+            "node": "Write Score To CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Score To CRM": {
+      "main": [
+        [
+          {
+            "node": "Persist Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Score": {
+      "main": [
+        [
+          {
+            "node": "Return Scored Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Configurable firmographic and behavioural rubric that writes score, band and reasons back to the CRM.",
+    "safety_rails": "Does not call the rails. This workflow performs no outbound contact and spends nothing - it reads a lead, computes a score and writes it back. The workflow that acts on the score is the one that must call the rails.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "scoring"
+    }
+  ],
+  "versionId": "1c24752f-90f3-9b5b-defd-0f30a452586f"
+}

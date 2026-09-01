@@ -1,0 +1,528 @@
+{
+  "name": "10-comment-to-dm-bridge Comment To DM Bridge",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 10 Comment To DM Bridge\n\nKeyword comment to a DM with the asset, with the comment stored as the consent record.\n\n**Safety rails:** Calls 16-safety-rails before any outbound action.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "5bc30e5b-fd99-7e53-d38b-9b21cded815c",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leadgen/social-comment",
+        "responseMode": "lastNode",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "a5569fec-8b0f-3c3c-964e-9bd6a275b873",
+      "name": "Comment Webhook",
+      "notes": "Meta/TikTok comment webhook. Needs an approved app - see Limitations in README.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Only a comment that contains the campaign keyword counts as a request for the asset.\n// The keyword IS the consent record - store the exact comment text, not a paraphrase.\nconst KEYWORD = String($env.COMMENT_KEYWORD || 'SEND').toLowerCase();\nconst out = [];\nfor (const item of $input.all()) {\n  const body = item.json.body || item.json;\n  const entries = Array.isArray(body.entry) ? body.entry : [body];\n  for (const entry of entries) {\n    for (const change of entry.changes || [entry]) {\n      const v = change.value || change;\n      const text = String(v.text || v.message || '');\n      const handle = (v.from && (v.from.username || v.from.id)) || v.user_id || '';\n      if (!handle) continue;\n      out.push({ json: {\n        matched: text.toLowerCase().includes(KEYWORD),\n        keyword: KEYWORD,\n        lead: {\n          handle,\n          name: (v.from && v.from.username) || '',\n          last_inbound_message: text,\n          source: 'social_comment',\n          post_id: v.post_id || v.media_id || '',\n          consent_basis: 'consent',\n          consent_recorded_at: new Date().toISOString()\n        }\n      } });\n    }\n  }\n}\nreturn out.length ? out : [{ json: { matched: false, keyword: KEYWORD, lead: { handle: '' } } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        120
+      ],
+      "id": "b23a4ee1-7a9c-9ddd-f770-0e6b1069f699",
+      "name": "Extract Keyword"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "59d11ec3-3e11-b15a-4c16-f7961079a1e3",
+              "leftValue": "={{ $json.matched === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        120
+      ],
+      "id": "d44b40df-df5f-a8d0-5345-307e83bbed0a",
+      "name": "Keyword Matched?"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        660,
+        120
+      ],
+      "id": "70e9a224-e5c1-cd8f-b61e-b0f595bde69a",
+      "name": "Ignore Comment",
+      "notes": "No keyword, no DM. Unsolicited DMs are how accounts get restricted.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build the request the rails expect. Missing fields are denied, not defaulted:\n// the rails fail closed on purpose.\nreturn $input.all().map((item) => {\n  const lead = item.json.lead || item.json;\n  return { json: Object.assign({}, item.json, { rails_request: {\n    channel: 'social_dm',\n    purpose: 'asset_delivery',\n    contact_email: lead.email || '',\n    contact_phone: lead.phone || '',\n    contact_handle: lead.handle || '',\n    inbound_message: lead.last_inbound_message || '',\n    consent: { basis: lead.consent_basis || null, recorded_at: lead.consent_recorded_at || null },\n    estimated_cost_usd: Number(lead.estimated_cost_usd || 0),\n    workflow: $workflow.name\n  } }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        290
+      ],
+      "id": "ef91d969-30a5-90d1-7bb1-8be2db220506",
+      "name": "Build Rails Request",
+      "notes": "Neutral request shape consumed by 16-safety-rails.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_16_SAFETY_RAILS_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "payload": "={{ JSON.stringify($json.rails_request) }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        920,
+        120
+      ],
+      "id": "9598bcde-560a-f739-b4c6-42172a0eba77",
+      "name": "Safety Rails",
+      "notes": "Calls 16-safety-rails. Nothing that can reach a prospect runs before the rails return allowed=true.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fcae3d8f-129d-fdae-c1d1-ec9dc5da1dba",
+              "leftValue": "={{ $json.allowed === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "4be56524-3ac0-e0c6-ecef-44d0aae64cb4",
+      "name": "Rails Allowed?",
+      "notes": "False branch is a dead end by design.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The rails said no. Record it and stop. A denied action is never retried.\nreturn $input.all().map((item) => ({ json: {\n  blocked: true,\n  code: item.json.code || 'denied',\n  reason: item.json.reason || 'Safety rails denied this action.',\n  contact: item.json.rails_request ? item.json.rails_request.contact_email : null,\n  workflow: $workflow.name,\n  at: new Date().toISOString()\n} }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        120
+      ],
+      "id": "8f12924b-da28-53ac-bf0d-8e95b87d2100",
+      "name": "Log Blocked"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO touch_log (lead_id, workflow, channel, direction, detail, occurred_at)\nVALUES (NULL, '{{ $json.workflow }}', 'social_dm', 'blocked',\n        jsonb_build_object('code', '{{ $json.code }}', 'reason', '{{ $json.reason }}'), NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1700,
+        120
+      ],
+      "id": "1ed84796-9194-0603-1c85-90568d333110",
+      "name": "Persist Block",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MESSAGING_BASE_URL }}/dm",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ handle: $json.lead.handle, text: ($env.ASSET_DM_TEXT || 'Here is the link you asked for:') + ' ' + $env.ASSET_URL, reply_to_comment: $json.lead.post_id }) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        290
+      ],
+      "id": "558afc38-0364-a512-6446-48e38383fad6",
+      "name": "Send DM With Asset",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_MESSAGING_CREDENTIAL_ID",
+          "name": "Messaging header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO consent_ledger (lead_id, identifier, identifier_type, basis, evidence, source, recorded_at)\nVALUES (NULL, '{{ $json.lead.handle }}', 'handle', 'consent',\n        jsonb_build_object('comment', '{{ $json.lead.last_inbound_message }}',\n                           'post_id', '{{ $json.lead.post_id }}',\n                           'keyword', '{{ $json.keyword }}'),\n        '10-comment-to-dm-bridge', NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1700,
+        290
+      ],
+      "id": "2a7f3acd-ad71-f040-2074-2e5943ff5597",
+      "name": "Log Consent",
+      "notes": "This row is the evidence that the contact asked you to DM them. Keep it.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Source of truth: logic/crm.js. Set CRM_ADAPTER (env var) to the CRM you run.\n// Supported: 'generic' (any REST CRM), 'hubspot', 'gohighlevel', 'pipedrive'.\n// See docs/CRM-MAPPING.md before adding a new one.\nconst CRM_ADAPTERS = ['generic', 'hubspot', 'gohighlevel', 'pipedrive'];\nconst CRM_ADAPTER = $env.CRM_ADAPTER || 'generic';\n\nfunction nonEmpty(o) {\n  const out = {};\n  for (const k of Object.keys(o)) {\n    const v = o[k];\n    if (v !== null && v !== undefined && v !== '') out[k] = v;\n  }\n  return out;\n}\nfunction splitName(name) {\n  const n = (name || '').trim();\n  if (!n) return { first: '', last: '' };\n  const p = n.split(/\\s+/);\n  return { first: p[0], last: p.slice(1).join(' ') };\n}\nfunction toCrmPayload(l) {\n  const name = splitName(l.name);\n  const tags = Array.isArray(l.tags) ? l.tags.slice() : [];\n  if (l.band) tags.push('score:' + l.band);\n  if (l.source) tags.push('source:' + l.source);\n  if (CRM_ADAPTER === 'hubspot') {\n    return { properties: nonEmpty({ email: l.email, phone: l.phone, firstname: name.first,\n      lastname: name.last, company: l.company, hs_lead_status: l.band === 'hot' ? 'OPEN' : 'NEW',\n      lifecyclestage: 'lead', lead_score_custom: l.score,\n      lead_score_reasons: (l.score_reasons || []).join('; ') }) };\n  }\n  if (CRM_ADAPTER === 'gohighlevel') {\n    return nonEmpty({ email: l.email, phone: l.phone, firstName: name.first, lastName: name.last,\n      companyName: l.company, source: l.source, tags: tags, customFields: [\n        { key: 'lead_score', field_value: String(l.score === undefined ? '' : l.score) },\n        { key: 'lead_band', field_value: l.band || '' },\n        { key: 'consent_basis', field_value: l.consent_basis || '' } ] });\n  }\n  if (CRM_ADAPTER === 'pipedrive') {\n    return nonEmpty({ name: l.name, org_name: l.company, label: l.band, visible_to: '3' });\n  }\n  return nonEmpty({ email: l.email, phone: l.phone, name: l.name, company: l.company,\n    domain: l.domain, source: l.source, campaign: l.campaign, score: l.score, band: l.band,\n    score_reasons: l.score_reasons, consent_basis: l.consent_basis, tags: tags, notes: l.notes });\n}\n\nreturn $input.all().map((item) => {\n  const lead = Object.assign({ source: '%s' }, item.json.lead || item.json);\n  return { json: Object.assign({}, item.json, {\n    lead,\n    crm_adapter: CRM_ADAPTER,\n    crm_payload: toCrmPayload(lead),\n    crm_match_value: lead.email || lead.phone || lead.name || ''\n  }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        120
+      ],
+      "id": "6457adf6-1b23-f31b-6585-801cc488d2d8",
+      "name": "CRM Adapter Map"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/leads/upsert",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "retry": {
+              "maxTries": 2,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.crm_payload) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2220,
+        120
+      ],
+      "id": "addf733a-632f-44a8-e816-6d45ccaf1ca4",
+      "name": "CRM Upsert",
+      "notes": "One HTTP node, one mapping node. Swap CRM by changing CRM_BASE_URL, the credential and CRM_ADAPTER. See docs/CRM-MAPPING.md.",
+      "notesInFlow": false,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CRM_CREDENTIAL_ID",
+          "name": "Crm header auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SLACK_CHANNEL_ID",
+          "mode": "id"
+        },
+        "text": "=Asset sent to @{{ $json.lead.handle }} after keyword '{{ $('Extract Keyword').item.json.keyword }}'",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        2480,
+        120
+      ],
+      "id": "e4369ca9-9d60-3c69-e73b-7022812f2823",
+      "name": "Notify Team",
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack workspace"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Comment Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Keyword",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Keyword": {
+      "main": [
+        [
+          {
+            "node": "Keyword Matched?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keyword Matched?": {
+      "main": [
+        [
+          {
+            "node": "Build Rails Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ignore Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Rails Request": {
+      "main": [
+        [
+          {
+            "node": "Safety Rails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Safety Rails": {
+      "main": [
+        [
+          {
+            "node": "Rails Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rails Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Send DM With Asset",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Blocked": {
+      "main": [
+        [
+          {
+            "node": "Persist Block",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send DM With Asset": {
+      "main": [
+        [
+          {
+            "node": "Log Consent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Consent": {
+      "main": [
+        [
+          {
+            "node": "CRM Adapter Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Adapter Map": {
+      "main": [
+        [
+          {
+            "node": "CRM Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Upsert": {
+      "main": [
+        [
+          {
+            "node": "Notify Team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Keyword comment to a DM with the asset, with the comment stored as the consent record.",
+    "safety_rails": "Calls 16-safety-rails before any outbound action.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "engage"
+    },
+    {
+      "name": "social"
+    }
+  ],
+  "versionId": "0e3bb63e-5f0b-b68f-c1af-ebdd32e3e302"
+}

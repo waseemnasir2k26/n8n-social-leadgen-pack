@@ -1,0 +1,334 @@
+{
+  "name": "07-dedupe-and-merge Dedupe And Merge",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 07 Dedupe And Merge\n\nFuzzy identity matching across email, phone and domain that merges duplicates without losing history.\n\n**Safety rails:** Does not call the rails - it is database maintenance and sends nothing. It only auto-merges on a strong identifier; weaker matches are queued for a human.\n\n**Before you enable this:** replace every REPLACE_WITH_* value, point CRM_BASE_URL/CRM_ADAPTER at your CRM, and run it once manually with test data.\n\nDocs: README.md, docs/SETUP.md, docs/COMPLIANCE.md",
+        "width": 400,
+        "height": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        60
+      ],
+      "id": "8afcba2b-f9db-3818-c1a7-d39fe44fe2ba",
+      "name": "Read Me"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "triggerAtHour": 2,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -120,
+        120
+      ],
+      "id": "f96519f6-8edf-e4c0-d59b-8f36ad68b635",
+      "name": "Nightly 02:00"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, email, phone, name, company, domain, created_at, merged_from\nFROM leads\nWHERE updated_at > NOW() - INTERVAL '7 days'\nORDER BY created_at ASC\nLIMIT 5000;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        140,
+        120
+      ],
+      "id": "5b8176d4-ebab-9c28-a0a8-81f02d15b91a",
+      "name": "Fetch Recent Leads",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Source of truth: logic/dedupe.js (unit tested in tests/dedupe.test.js).\nconst FREE_EMAIL_DOMAINS = ['gmail.com','yahoo.com','hotmail.com','outlook.com','live.com','aol.com','icloud.com','proton.me','protonmail.com','gmx.com','mail.com'];\nfunction normalizeEmail(email) {\n  if (typeof email !== 'string' || !email.includes('@')) return '';\n  const e = email.trim().toLowerCase();\n  let local = e.slice(0, e.lastIndexOf('@'));\n  let domain = e.slice(e.lastIndexOf('@') + 1);\n  const plus = local.indexOf('+');\n  if (plus > 0) local = local.slice(0, plus);\n  if (domain === 'gmail.com' || domain === 'googlemail.com') { local = local.split('.').join(''); domain = 'gmail.com'; }\n  return local && domain ? local + '@' + domain : '';\n}\nfunction normalizePhone(p) {\n  const d = String(p || '').replace(/[^0-9]/g, '');\n  return d.length < 7 ? '' : d.slice(-10);\n}\nfunction normalizeDomain(v) {\n  let d = String(v || '').trim().toLowerCase().replace(/^https?:\\/\\//, '').replace(/^www\\./, '');\n  d = d.split('/')[0].split('?')[0].split(':')[0];\n  return d.includes('.') ? d : '';\n}\nfunction normalizeName(n) {\n  return String(n || '').trim().toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\\s+/g, ' ').trim();\n}\nreturn $input.all().map((item) => {\n  const r = item.json;\n  const emailKey = normalizeEmail(r.email);\n  const emailDomain = emailKey.split('@').pop();\n  const domainKey = normalizeDomain(r.domain) || (emailDomain && !FREE_EMAIL_DOMAINS.includes(emailDomain) ? emailDomain : '');\n  return { json: Object.assign({}, r, {\n    email_key: emailKey, phone_key: normalizePhone(r.phone),\n    domain_key: domainKey, name_key: normalizeName(r.name)\n  }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        120
+      ],
+      "id": "21327ee2-4a43-3126-7d46-38947871bb98",
+      "name": "Build Match Keys"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Source of truth: logic/dedupe.js. Merge only on a strong identifier.\n// Name similarity alone never reaches the merge threshold - merging two real\n// people is unrecoverable, a missed merge is not.\nconst MATCH_THRESHOLDS = { merge: 0.9, review: 0.6 };\nfunction levenshtein(a, b) {\n  if (a === b) return 0;\n  if (!a.length) return b.length;\n  if (!b.length) return a.length;\n  let prev = [];\n  for (let j = 0; j <= b.length; j++) prev[j] = j;\n  for (let i = 1; i <= a.length; i++) {\n    const cur = [i];\n    for (let j = 1; j <= b.length; j++) {\n      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;\n      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);\n    }\n    prev = cur;\n  }\n  return prev[b.length];\n}\nfunction nameSim(a, b) {\n  if (!a || !b) return 0;\n  if (a === b) return 1;\n  return 1 - levenshtein(a, b) / Math.max(a.length, b.length);\n}\nconst rows = $input.all().map((i) => i.json);\nconst pairs = [];\nfor (let i = 0; i < rows.length; i++) {\n  for (let j = i + 1; j < rows.length; j++) {\n    const a = rows[i]; const b = rows[j];\n    let score = 0; const evidence = [];\n    if (a.email_key && a.email_key === b.email_key) { score = Math.max(score, 1); evidence.push('email_exact'); }\n    if (a.phone_key && a.phone_key === b.phone_key) { score = Math.max(score, 0.95); evidence.push('phone_exact'); }\n    const sim = nameSim(a.name_key, b.name_key);\n    if (a.domain_key && a.domain_key === b.domain_key) {\n      evidence.push('domain_exact');\n      if (sim >= 0.85) { score = Math.max(score, 0.9); evidence.push('name_similar'); }\n      else { score = Math.max(score, 0.45); }\n    } else if (sim >= 0.92) { score = Math.max(score, 0.6); evidence.push('name_only'); }\n    if (score < MATCH_THRESHOLDS.review) continue;\n    const decision = score >= MATCH_THRESHOLDS.merge ? 'merge' : 'review';\n    const [keep, drop] = new Date(a.created_at) <= new Date(b.created_at) ? [a, b] : [b, a];\n    pairs.push({ json: { decision, score: Number(score.toFixed(3)), evidence,\n      keep_id: keep.id, drop_id: drop.id, keep_email: keep.email, drop_email: drop.email } });\n  }\n}\nreturn pairs.length ? pairs : [{ json: { decision: 'none', score: 0, evidence: [], keep_id: null, drop_id: null } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        120
+      ],
+      "id": "5d7502ff-15a8-c77f-16ce-8f6630b78982",
+      "name": "Find Duplicate Pairs"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bd889839-2fb8-bcff-ef9c-e4da30432589",
+              "leftValue": "={{ $json.decision === 'merge' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        920,
+        120
+      ],
+      "id": "d9384b3a-31d8-eb57-3bcb-fc931693f9fa",
+      "name": "Auto Merge?"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE leads SET merged_into = {{ $json.keep_id }}, updated_at = NOW()\nWHERE id = {{ $json.drop_id }};\nUPDATE touch_log SET lead_id = {{ $json.keep_id }} WHERE lead_id = {{ $json.drop_id }};\nUPDATE consent_ledger SET lead_id = {{ $json.keep_id }} WHERE lead_id = {{ $json.drop_id }};",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1180,
+        120
+      ],
+      "id": "efacfc0b-7423-8edf-111c-44ec14145f7f",
+      "name": "Apply Merge",
+      "notes": "History is repointed, never deleted. The losing row stays with merged_into set.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO merge_log (keep_id, drop_id, match_score, evidence, decided_by, created_at)\nVALUES ({{ $json.keep_id }}, {{ $json.drop_id }}, {{ $json.score }},\n        '{{ JSON.stringify($json.evidence) }}'::jsonb, 'auto', NOW());",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1440,
+        120
+      ],
+      "id": "62b7c950-4190-416e-0dc3-8bd614635da9",
+      "name": "Log Merge History",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SLACK_CHANNEL_ID",
+          "mode": "id"
+        },
+        "text": "=Merged lead {{ $json.drop_id }} into {{ $json.keep_id }} (score {{ $json.score }}, {{ $json.evidence.join(', ') }})",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1700,
+        120
+      ],
+      "id": "3f36379f-cc45-a335-9914-5e346bf311ef",
+      "name": "Notify Merges",
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO merge_log (keep_id, drop_id, match_score, evidence, decided_by, created_at)\nSELECT {{ $json.keep_id }}, {{ $json.drop_id }}, {{ $json.score }},\n       '{{ JSON.stringify($json.evidence) }}'::jsonb, 'review', NOW()\nWHERE '{{ $json.decision }}' = 'review';",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        920,
+        290
+      ],
+      "id": "88d9d0fd-ced9-15b8-4f41-7de59a5acecd",
+      "name": "Queue Review Pairs",
+      "notes": "Anything below the merge threshold waits for a human. Nothing is silently merged.",
+      "notesInFlow": false,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Leadgen Postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Nightly 02:00": {
+      "main": [
+        [
+          {
+            "node": "Fetch Recent Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Recent Leads": {
+      "main": [
+        [
+          {
+            "node": "Build Match Keys",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Match Keys": {
+      "main": [
+        [
+          {
+            "node": "Find Duplicate Pairs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Duplicate Pairs": {
+      "main": [
+        [
+          {
+            "node": "Auto Merge?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Queue Review Pairs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto Merge?": {
+      "main": [
+        [
+          {
+            "node": "Apply Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Merge": {
+      "main": [
+        [
+          {
+            "node": "Log Merge History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Merge History": {
+      "main": [
+        [
+          {
+            "node": "Notify Merges",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 900,
+    "timezone": "REPLACE_WITH_YOUR_IANA_TIMEZONE",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "REPLACE_WITH_YOUR_ERROR_WORKFLOW_ID"
+  },
+  "staticData": null,
+  "meta": {
+    "purpose": "Fuzzy identity matching across email, phone and domain that merges duplicates without losing history.",
+    "safety_rails": "Does not call the rails - it is database maintenance and sends nothing. It only auto-merges on a strong identifier; weaker matches are queued for a human.",
+    "pack": "n8n-social-leadgen-pack",
+    "pack_version": "1.0.0"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "leadgen"
+    },
+    {
+      "name": "data-quality"
+    }
+  ],
+  "versionId": "5e780c1a-abc3-6361-a71b-3193c6f92dfc"
+}
