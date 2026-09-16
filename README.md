@@ -5,6 +5,10 @@ scored leads in whichever CRM your client already pays for - with the opt-out,
 rate-limit and spend controls an agency needs before it points any of this at a
 client's account.
 
+## Status
+
+Last reviewed: September 2026 · release v2026.09
+
 ```
                         SOCIAL / WEB SURFACE
    web form   IG DM   FB Lead Ads   LinkedIn inbox   post comments
