@@ -5,6 +5,8 @@ scored leads in whichever CRM your client already pays for - with the opt-out,
 rate-limit and spend controls an agency needs before it points any of this at a
 client's account.
 
+**For you if** you are an agency or in-house team that wants lead capture, scoring and follow-up in n8n with hard stops built in, and you can run Postgres.
+
 ## Status
 
 Last reviewed: October 2026 · release v2026.10
@@ -270,14 +272,12 @@ would have failed before your change.
 
 ---
 
-## Work with SkynetLabs
-
-Built by [Waseem Nasir](https://www.skynetjoe.com/?utm_source=github&utm_medium=readme&utm_campaign=n8n-social-leadgen-pack) at SkynetLabs — n8n + AI automation for small businesses.
-
-- Hire on Fiverr: https://www.fiverr.com/agencies/skynetjoellc
-- Hire on Upwork: https://www.upwork.com/freelancers/muhammadwaseemnasir
-- Book a free call: https://calendly.com/skynetlabs/schedule-a-free-consultation
-
 ## License
 
 MIT - see [LICENSE](LICENSE).
+
+---
+
+Built by SkynetLabs. Contact: info@skynetjoe.com
+
+Need this wired into your business? SkynetLabs builds voice agents, n8n back offices and sites that convert → https://skynetjoe.com
